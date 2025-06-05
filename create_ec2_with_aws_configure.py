@@ -630,13 +630,415 @@ class EC2InstanceManager:
             self.log_operation('ERROR', f"Error creating security group {group_name}: {e}")
             raise
 
-    def create_instances_for_selected_accounts(self, selected_accounts, instance_type='t3.micro', capacity_type='spot', wait_for_running=True):
+    def ask_for_spot_analysis(self):
+        """Ask user if they want Spot analysis or manual selection"""
+        print(f"\n🔍 Spot Instance Analysis")
+        print("=" * 60)
+        print("Would you like to analyze Spot instance availability and pricing?")
+        print("")
+        print("📊 Spot Analysis Benefits:")
+        print("   • Checks current Spot prices vs On-Demand pricing")
+        print("   • Analyzes interruption frequency in each region")
+        print("   • Provides intelligent recommendations per region")
+        print("   • Supports mixed strategy (Spot where safe, On-Demand elsewhere)")
+        print("")
+        print("📋 Options:")
+        print("   1. Yes - Perform Spot analysis and get recommendations")
+        print("   2. No - I'll choose capacity type manually")
+        print("=" * 60)
+        
+        while True:
+            try:
+                choice = input(f"Perform Spot analysis? (1-2) [default: Yes]: ").strip()
+                
+                self.log_operation('INFO', f"User spot analysis choice: '{choice}'")
+                
+                if not choice or choice == '1':
+                    self.log_operation('INFO', "User chose to perform Spot analysis")
+                    return True
+                elif choice == '2':
+                    self.log_operation('INFO', "User chose manual capacity selection")
+                    return False
+                else:
+                    print("❌ Please enter 1 or 2")
+                    self.log_operation('WARNING', f"Invalid spot analysis choice: {choice}")
+            except ValueError:
+                print("❌ Please enter a valid number")
+    def select_capacity_type_manual(self):
+        """Allow user to manually select capacity type without analysis"""
+        print(f"\n⚡ Instance Capacity Type Selection")
+        print("=" * 60)
+        print("Available capacity types:")
+        print("  1. On-Demand - Standard pricing, guaranteed availability")
+        print("  2. Spot - Up to 90% savings, may be interrupted")
+        print("=" * 60)
+        
+        while True:
+            try:
+                choice = input(f"Select capacity type (1-2) [default: On-Demand]: ").strip()
+                
+                self.log_operation('INFO', f"User manual capacity selection input: '{choice}'")
+                
+                if not choice or choice == '1':
+                    self.log_operation('INFO', "User selected On-Demand capacity (manual)")
+                    return 'on-demand'
+                elif choice == '2':
+                    self.log_operation('INFO', "User selected Spot capacity (manual)")
+                    return 'spot'
+                else:
+                    print("❌ Please enter 1 or 2")
+                    self.log_operation('WARNING', f"Invalid manual capacity choice: {choice}")
+            except ValueError:
+                print("❌ Please enter a valid number")
+    def get_spot_price_history(self, ec2_client, instance_type, region, days=7):
+        """Get Spot price history to analyze price stability"""
+        try:
+            from datetime import datetime, timedelta
+            
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days)
+            
+            response = ec2_client.describe_spot_price_history(
+                InstanceTypes=[instance_type],
+                ProductDescriptions=['Linux/UNIX'],
+                StartTime=start_time,
+                EndTime=end_time,
+                MaxResults=100
+            )
+            
+            prices = []
+            for price_point in response['SpotPriceHistory']:
+                prices.append({
+                    'price': float(price_point['SpotPrice']),
+                    'timestamp': price_point['Timestamp'],
+                    'az': price_point['AvailabilityZone']
+                })
+            
+            return prices
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to get Spot price history: {e}")
+            return []
+
+    def analyze_spot_price_stability(self, prices):
+        """Analyze price stability and volatility"""
+        if not prices:
+            return None
+        
+        price_values = [p['price'] for p in prices]
+        
+        if len(price_values) < 2:
+            return None
+        
+        avg_price = sum(price_values) / len(price_values)
+        min_price = min(price_values)
+        max_price = max(price_values)
+        
+        # Calculate volatility (standard deviation)
+        variance = sum((p - avg_price) ** 2 for p in price_values) / len(price_values)
+        volatility = variance ** 0.5
+        
+        # Price stability score (lower is more stable)
+        volatility_percent = (volatility / avg_price) * 100 if avg_price > 0 else 100
+        
+        return {
+            'avg_price': avg_price,
+            'min_price': min_price,
+            'max_price': max_price,
+            'current_price': price_values[-1] if price_values else avg_price,
+            'volatility_percent': volatility_percent,
+            'price_trend': 'stable' if volatility_percent < 10 else 'volatile',
+            'sample_count': len(price_values)
+        }
+
+    def check_spot_capacity_availability(self, ec2_client, instance_type, region):
+        """Check Spot capacity availability across AZs"""
+        try:
+            # Get availability zones in the region
+            azs_response = ec2_client.describe_availability_zones(
+                Filters=[{'Name': 'state', 'Values': ['available']}]
+            )
+            
+            availability_info = {}
+            
+            for az_info in azs_response['AvailabilityZones']:
+                az_name = az_info['ZoneName']
+                
+                # Skip unsupported AZs
+                unsupported_azs = self._get_unsupported_azs(region)
+                if az_name in unsupported_azs:
+                    continue
+                
+                try:
+                    # Request spot fleet to check capacity (dry run)
+                    response = ec2_client.request_spot_fleet(
+                        DryRun=True,  # This won't actually create anything
+                        SpotFleetRequestConfig={
+                            'IamFleetRole': 'arn:aws:iam::123456789012:role/fleet-role',  # Dummy role
+                            'AllocationStrategy': 'lowestPrice',
+                            'TargetCapacity': 1,
+                            'SpotPrice': '0.001',  # Very low price for testing
+                            'LaunchSpecifications': [{
+                                'ImageId': self.ami_config['region_ami_mapping'].get(region, 'ami-12345'),
+                                'InstanceType': instance_type,
+                                'Placement': {'AvailabilityZone': az_name}
+                            }]
+                        }
+                    )
+                    availability_info[az_name] = 'available'
+                except ClientError as e:
+                    error_code = e.response['Error']['Code']
+                    if error_code == 'DryRunOperation':
+                        availability_info[az_name] = 'available'
+                    elif 'InsufficientSpotCapacity' in error_code:
+                        availability_info[az_name] = 'insufficient_capacity'
+                    elif 'SpotMaxPriceTooLow' in error_code:
+                        availability_info[az_name] = 'available'  # Price too low, but capacity exists
+                    else:
+                        availability_info[az_name] = f'error: {error_code}'
+            
+            return availability_info
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to check Spot capacity: {e}")
+            return {}
+    
+    def get_ondemand_price(self, instance_type, region):
+        """Get On-Demand pricing using AWS Pricing API"""
+        try:
+            import boto3
+            pricing_client = boto3.client('pricing', region_name='us-east-1')  # Pricing API only available in us-east-1
+            
+            response = pricing_client.get_products(
+                ServiceCode='AmazonEC2',
+                Filters=[
+                    {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+                    {'Type': 'TERM_MATCH', 'Field': 'location', 'Value': region},
+                    {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': 'Shared'},
+                    {'Type': 'TERM_MATCH', 'Field': 'operating-system', 'Value': 'Linux'},
+                    {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': 'NA'}
+                ]
+            )
+            
+            for price_item in response['PriceList']:
+                price_data = json.loads(price_item)
+                terms = price_data.get('terms', {}).get('OnDemand', {})
+                
+                for term_key, term_data in terms.items():
+                    price_dimensions = term_data.get('priceDimensions', {})
+                    for dim_key, dim_data in price_dimensions.items():
+                        price_per_hour = float(dim_data['pricePerUnit']['USD'])
+                        return price_per_hour
+            
+            return None
+        except Exception as e:
+            self.log_operation('WARNING', f"Could not get On-Demand price: {e}")
+            return None
+
+    def get_region_display_name(self, region):
+        """Convert region code to display name for pricing API"""
+        region_names = {
+            'us-east-1': 'US East (N. Virginia)',
+            'us-west-2': 'US West (Oregon)',
+            'eu-west-1': 'Europe (Ireland)',
+            # Add more mappings as needed
+        }
+        return region_names.get(region, region)
+    
+    def should_use_spot_instance(self, ec2_client, instance_type, region):
+        """Analyze whether to use Spot instances based on multiple factors"""
+        analysis = {
+            'recommendation': 'on-demand',  # Default to safer option
+            'reasoning': [],
+            'spot_price_analysis': None,
+            'capacity_analysis': None,
+            'cost_savings': None,
+            'confidence_score': 0
+        }
+        
+        try:
+            # Get Spot price history
+            self.log_operation('INFO', f"Analyzing Spot availability for {instance_type} in {region}")
+            
+            spot_prices = self.get_spot_price_history(ec2_client, instance_type, region)
+            if spot_prices:
+                price_analysis = self.analyze_spot_price_stability(spot_prices)
+                analysis['spot_price_analysis'] = price_analysis
+                
+                if price_analysis:
+                    # Check price stability (less than 15% volatility is good)
+                    if price_analysis['volatility_percent'] < 15:
+                        analysis['confidence_score'] += 30
+                        analysis['reasoning'].append(f"✅ Price stable (volatility: {price_analysis['volatility_percent']:.1f}%)")
+                    else:
+                        analysis['reasoning'].append(f"⚠️ Price volatile (volatility: {price_analysis['volatility_percent']:.1f}%)")
+            
+            # Check capacity availability
+            capacity_info = self.check_spot_capacity_availability(ec2_client, instance_type, region)
+            analysis['capacity_analysis'] = capacity_info
+            
+            available_azs = [az for az, status in capacity_info.items() if status == 'available']
+            if len(available_azs) >= 2:  # At least 2 AZs with capacity
+                analysis['confidence_score'] += 25
+                analysis['reasoning'].append(f"✅ Capacity available in {len(available_azs)} AZs")
+            elif len(available_azs) == 1:
+                analysis['confidence_score'] += 10
+                analysis['reasoning'].append(f"⚠️ Capacity available in only {len(available_azs)} AZ")
+            else:
+                analysis['reasoning'].append("❌ No Spot capacity available")
+            
+            # Compare with On-Demand pricing
+            ondemand_price = self.get_ondemand_price(instance_type, region)
+            if ondemand_price and analysis['spot_price_analysis']:
+                current_spot_price = analysis['spot_price_analysis']['current_price']
+                savings_percent = ((ondemand_price - current_spot_price) / ondemand_price) * 100
+                analysis['cost_savings'] = {
+                    'ondemand_price': ondemand_price,
+                    'spot_price': current_spot_price,
+                    'savings_percent': savings_percent,
+                    'savings_per_hour': ondemand_price - current_spot_price
+                }
+                
+                if savings_percent > 50:  # More than 50% savings
+                    analysis['confidence_score'] += 25
+                    analysis['reasoning'].append(f"✅ Excellent savings: {savings_percent:.1f}%")
+                elif savings_percent > 30:  # More than 30% savings
+                    analysis['confidence_score'] += 15
+                    analysis['reasoning'].append(f"✅ Good savings: {savings_percent:.1f}%")
+                else:
+                    analysis['reasoning'].append(f"⚠️ Limited savings: {savings_percent:.1f}%")
+            
+            # Make recommendation based on confidence score
+            if analysis['confidence_score'] >= 60:
+                analysis['recommendation'] = 'spot'
+                analysis['reasoning'].append(f"🎯 Recommendation: USE SPOT (confidence: {analysis['confidence_score']}/100)")
+            elif analysis['confidence_score'] >= 35:
+                analysis['recommendation'] = 'spot-with-caution'
+                analysis['reasoning'].append(f"⚠️ Recommendation: SPOT WITH CAUTION (confidence: {analysis['confidence_score']}/100)")
+            else:
+                analysis['recommendation'] = 'on-demand'
+                analysis['reasoning'].append(f"🛡️ Recommendation: USE ON-DEMAND (confidence: {analysis['confidence_score']}/100)")
+            
+            return analysis
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Error in Spot analysis: {e}")
+            analysis['reasoning'].append(f"❌ Analysis failed: {e}")
+            return analysis
+        
+    def display_spot_analysis_menu(self, selected_accounts, instance_type):
+        """Display Spot instance analysis and get user preference"""
+        
+        # Analyze all regions that will be used
+        regions_to_analyze = set()
+        for account_data in selected_accounts.values():
+            for user_data in account_data.get('users', []):
+                regions_to_analyze.add(user_data.get('region', 'us-east-1'))
+        
+        print(f"\n🔍 Analyzing Spot Instance Availability")
+        print("=" * 80)
+        print(f"Instance Type: {instance_type}")
+        print(f"Regions to analyze: {', '.join(sorted(regions_to_analyze))}")
+        print("-" * 80)
+        
+        region_analyses = {}
+        overall_recommendation = 'on-demand'
+        
+        for region in regions_to_analyze:
+            print(f"\n🌍 Analyzing {region}...")
+            
+            # Create a temporary client for analysis
+            try:
+                # Use first available user's credentials for analysis
+                sample_user = None
+                for account_data in selected_accounts.values():
+                    for user_data in account_data.get('users', []):
+                        if user_data.get('region') == region:
+                            sample_user = user_data
+                            break
+                    if sample_user:
+                        break
+                
+                if not sample_user:
+                    continue
+                    
+                ec2_client = self.create_ec2_client(
+                    sample_user['access_key_id'],
+                    sample_user['secret_access_key'],
+                    region
+                )
+                
+                analysis = self.should_use_spot_instance(ec2_client, instance_type, region)
+                region_analyses[region] = analysis
+                
+                # Display analysis for this region
+                print(f"   📊 Analysis Results:")
+                for reason in analysis['reasoning']:
+                    print(f"      {reason}")
+                
+                if analysis['cost_savings']:
+                    savings = analysis['cost_savings']
+                    print(f"   💰 Pricing Comparison:")
+                    print(f"      On-Demand: ${savings['ondemand_price']:.4f}/hour")
+                    print(f"      Spot:      ${savings['spot_price']:.4f}/hour")
+                    print(f"      Savings:   {savings['savings_percent']:.1f}% (${savings['savings_per_hour']:.4f}/hour)")
+                
+            except Exception as e:
+                print(f"   ❌ Analysis failed: {e}")
+                continue
+        
+        # Determine overall recommendation
+        spot_regions = sum(1 for analysis in region_analyses.values() 
+                        if analysis['recommendation'] == 'spot')
+        caution_regions = sum(1 for analysis in region_analyses.values() 
+                            if analysis['recommendation'] == 'spot-with-caution')
+        
+        if spot_regions == len(region_analyses):
+            overall_recommendation = 'spot'
+        elif spot_regions + caution_regions >= len(region_analyses) * 0.7:
+            overall_recommendation = 'mixed'
+        else:
+            overall_recommendation = 'on-demand'
+        
+        # Display menu
+        print(f"\n🎯 Spot Instance Recommendation Summary:")
+        print("=" * 60)
+        print(f"Overall recommendation: {overall_recommendation.upper()}")
+        print("-" * 60)
+        
+        print(f"\n📋 Instance Creation Options:")
+        print("  1. Use Spot instances (where recommended)")
+        print("  2. Use On-Demand instances (safer, more expensive)")
+        print("  3. Mixed approach (Spot where safe, On-Demand elsewhere)")
+        print("  4. Show detailed analysis again")
+        print("  5. Cancel")
+        
+        while True:
+            choice = input(f"\n🔢 Choose your approach (1-5): ").strip()
+            
+            if choice == '1':
+                return 'spot', region_analyses
+            elif choice == '2':
+                return 'on-demand', region_analyses
+            elif choice == '3':
+                return 'mixed', region_analyses
+            elif choice == '4':
+                # Show detailed analysis again
+                continue
+            elif choice == '5':
+                return 'cancel', region_analyses
+            else:
+                print("❌ Invalid choice. Please enter 1-5.")
+
+    def create_instances_for_selected_accounts(self, selected_accounts, instance_type='t3.micro', wait_for_running=True):
         """Create EC2 instances for users in selected accounts"""
         created_instances = []
         failed_instances = []
         
+        # Get the capacity strategy from class attribute (set during Spot analysis)
+        capacity_strategy = getattr(self, 'capacity_strategy', 'on-demand')
+        
         self.log_operation('INFO', "🚀 Starting EC2 instance creation process")
         self.log_operation('INFO', f"Instance type: {instance_type}")
+        self.log_operation('INFO', f"Capacity strategy: {capacity_strategy}")
         self.log_operation('INFO', f"User data script: {self.userdata_file}")
         self.log_operation('INFO', f"Credentials source: {self.credentials_file}")
         self.log_operation('INFO', f"Wait for running: {wait_for_running}")
@@ -686,18 +1088,71 @@ class EC2InstanceManager:
                     # Create EC2 client with user's credentials
                     ec2_client = self.create_ec2_client(access_key, secret_key, region)
                     
-                    # Create instance
-                    instance_info = self.create_instance_with_capacity_type(
-                        ec2_client, 
-                        self.user_data_script, 
-                        region, 
-                        username,
-                        real_user_info,
-                        access_key,      # Pass credentials
-                        secret_key,      # Pass credentials
-                        instance_type,
-                        capacity_type
-                    )
+                    # Determine which instance creation method to use based on capacity strategy
+                    actual_capacity_used = capacity_strategy  # Default assumption
+                    
+                    if capacity_strategy == 'spot':
+                        self.log_operation('INFO', f"Creating Spot instance for {username} in {region}")
+                        instance_info = self.create_instance_with_capacity_type(
+                            ec2_client, 
+                            self.user_data_script, 
+                            region, 
+                            username,
+                            real_user_info,
+                            access_key,
+                            secret_key,
+                            instance_type,
+                            capacity_strategy
+                        )
+                        actual_capacity_used = 'spot'
+                        
+                    elif capacity_strategy == 'mixed':
+                        # Check region-specific analysis for recommendation
+                        region_analysis = getattr(self, 'spot_analyses', {}).get(region, {})
+                        region_recommendation = region_analysis.get('recommendation', 'on-demand')
+                        
+                        if region_recommendation == 'spot':
+                            self.log_operation('INFO', f"Creating Spot instance for {username} in {region} (mixed strategy - region recommended)")
+                            instance_info = self.create_instance_with_capacity_type(
+                                ec2_client, 
+                                self.user_data_script, 
+                                region, 
+                                username,
+                                real_user_info,
+                                access_key,
+                                secret_key,
+                                instance_type,
+                                capacity_strategy
+                            )
+                            actual_capacity_used = 'spot'
+                        else:
+                            self.log_operation('INFO', f"Creating On-Demand instance for {username} in {region} (mixed strategy - region not recommended for Spot)")
+                            instance_info = self.create_instance_with_capacity_type(
+                                ec2_client, 
+                                self.user_data_script, 
+                                region, 
+                                username,
+                                real_user_info,
+                                access_key,
+                                secret_key,
+                                instance_type,
+                                capacity_strategy
+                            )
+                            actual_capacity_used = 'on-demand'
+                            
+                    else:  # 'on-demand' or any other value
+                        self.log_operation('INFO', f"Creating On-Demand instance for {username} in {region}")
+                        instance_info = self.create_instance(
+                            ec2_client, 
+                            self.user_data_script, 
+                            region, 
+                            username,
+                            real_user_info,
+                            access_key,
+                            secret_key,
+                            instance_type
+                        )
+                        actual_capacity_used = 'on-demand'
                     
                     # Wait for instance to be running (optional)
                     if wait_for_running:
@@ -715,7 +1170,10 @@ class EC2InstanceManager:
                         'account_id': account_id,
                         'account_email': account_email,
                         'user_data': user_data,
-                        'created_at': self.current_time
+                        'created_at': self.current_time,
+                        'capacity_strategy': capacity_strategy,
+                        'actual_capacity_used': actual_capacity_used,
+                        'spot_analysis': getattr(self, 'spot_analyses', {}).get(region, {}) if capacity_strategy in ['mixed', 'spot'] else None
                     })
                     
                     created_instances.append(instance_info)
@@ -726,6 +1184,10 @@ class EC2InstanceManager:
                     print(f"   📍 Instance ID: {instance_info['instance_id']}")
                     print(f"   🌍 Region: {region}")
                     print(f"   💻 Instance Type: {instance_info['instance_type']}")
+                    print(f"   ⚡ Capacity Type: {actual_capacity_used}")
+                    if actual_capacity_used == 'spot':
+                        spot_price = instance_info.get('spot_price', 'N/A')
+                        print(f"   💰 Spot Price: ${spot_price}/hour")
                     print(f"   🏦 Account: {account_name} ({account_id})")
                     if 'public_ip' in instance_info:
                         print(f"   🌐 Public IP: {instance_info['public_ip']}")
@@ -742,16 +1204,27 @@ class EC2InstanceManager:
                         'region': region,
                         'account_name': account_name,
                         'account_id': account_id,
-                        'error': error_msg
+                        'error': error_msg,
+                        'attempted_capacity_strategy': capacity_strategy
                     })
                     print(f"\n❌ FAILED: Instance creation failed for {real_name}")
                     print(f"   👤 Username: {username}")
                     print(f"   🏦 Account: {account_name}")
+                    print(f"   🌍 Region: {region}")
+                    print(f"   ⚡ Attempted Strategy: {capacity_strategy}")
                     print(f"   Error: {error_msg}")
                     print("-" * 60)
                     continue
         
+        # Calculate capacity strategy statistics
+        capacity_stats = {}
+        for instance in created_instances:
+            actual_capacity = instance.get('actual_capacity_used', 'unknown')
+            capacity_stats[actual_capacity] = capacity_stats.get(actual_capacity, 0) + 1
+        
         self.log_operation('INFO', f"Instance creation completed - Created: {len(created_instances)}, Failed: {len(failed_instances)}")
+        self.log_operation('INFO', f"Capacity distribution: {capacity_stats}")
+        
         return created_instances, failed_instances
 
     def wait_for_instance_running(self, ec2_client, instance_id, username, timeout=300):
@@ -1794,8 +2267,8 @@ class EC2InstanceManager:
             
             print("🚀 EC2 Instance Creation for IAM Users")
             print("=" * 80)
-            print(f"📅 Execution Date/Time: {self.current_time} UTC")
-            print(f"👤 Executed by: {self.current_user}")
+            print(f"📅 Execution Date/Time: 2025-06-05 19:27:50 UTC")
+            print(f"👤 Executed by: varadharajaan")
             print(f"📄 Credentials Source: {self.credentials_file}")
             print(f"📜 User Data Script: {self.userdata_file}")
             print(f"📋 Log File: {self.log_filename}")
@@ -1864,10 +2337,39 @@ class EC2InstanceManager:
                     print("❌ Invalid choice. Please enter 1 or 2.")
                     self.log_operation('WARNING', f"Invalid selection level choice: {selection_level}")
             
-            # Select instance type
+            # Step 3: Select instance type
             instance_type = self.display_instance_menu()
-
-            capacity_type = self.select_capacity_type_ec2()
+            
+            # Step 4: 🔥 ASK FOR SPOT ANALYSIS OR MANUAL SELECTION
+            wants_analysis = self.ask_for_spot_analysis()
+            
+            if wants_analysis:
+                # Perform Spot analysis
+                print(f"\n🔍 Analyzing Spot instance availability and pricing...")
+                self.log_operation('INFO', f"Starting Spot analysis for instance type: {instance_type}")
+                
+                spot_strategy, spot_analyses = self.display_spot_analysis_menu(final_accounts, instance_type)
+                
+                if spot_strategy == 'cancel':
+                    self.log_operation('INFO', "Session cancelled during Spot analysis")
+                    print("❌ Instance creation cancelled")
+                    return
+                
+                # Store the strategy for use during instance creation
+                self.capacity_strategy = spot_strategy
+                self.spot_analyses = spot_analyses
+                
+                self.log_operation('INFO', f"Spot analysis completed - Strategy: {spot_strategy}")
+                
+            else:
+                # Manual capacity selection
+                manual_capacity = self.select_capacity_type_manual()
+                
+                # Store the strategy for use during instance creation
+                self.capacity_strategy = manual_capacity
+                self.spot_analyses = {}  # No analysis data for manual selection
+                
+                self.log_operation('INFO', f"Manual capacity selection completed - Strategy: {manual_capacity}")
             
             # Calculate totals for final selection
             total_users = sum(len(account_data.get('users', [])) 
@@ -1879,9 +2381,11 @@ class EC2InstanceManager:
             print(f"   📈 Selected accounts: {len(final_accounts)}")
             print(f"   👥 Total users: {total_users}")
             print(f"   💻 Instance type: {instance_type}")
-            # ADD THIS: Show cost estimation for all instances
-            print(f"\n📊 Total Cost Estimation for {total_users} instances:")
-            self.display_cost_estimation(instance_type, capacity_type, total_users)
+            print(f"   ⚡ Capacity strategy: {self.capacity_strategy}")
+            if wants_analysis:
+                print(f"   🔍 Analysis method: Intelligent (with Spot analysis)")
+            else:
+                print(f"   🔍 Analysis method: Manual selection")
             
             # Show account breakdown
             print(f"\n🏦 Final Account/User Breakdown:")
@@ -1896,19 +2400,32 @@ class EC2InstanceManager:
                     real_user = user_data.get('real_user', {})
                     full_name = real_user.get('full_name', username)
                     region = user_data.get('region', 'unknown')
-                    print(f"     - {full_name} ({username}) in {region}")
+                    
+                    # Show region-specific strategy if analysis was performed
+                    if wants_analysis and self.capacity_strategy == 'mixed':
+                        region_analysis = self.spot_analyses.get(region, {})
+                        region_rec = region_analysis.get('recommendation', 'on-demand')
+                        print(f"     - {full_name} ({username}) in {region} → {region_rec}")
+                    else:
+                        print(f"     - {full_name} ({username}) in {region}")
             
             print(f"\n🔧 Configuration:")
             print(f"   📜 User data: {self.userdata_file}")
             print(f"   📄 Credentials: {self.credentials_file}")
             print(f"   📋 Log file: {self.log_filename}")
+            print(f"   ⚡ Capacity strategy: {self.capacity_strategy}")
+            if wants_analysis:
+                print(f"   🔍 Based on: Spot availability analysis")
+            else:
+                print(f"   🔍 Based on: Manual user selection")
             print("=" * 60)
             
             # Log final configuration
-            self.log_operation('INFO', f"Final configuration - Accounts: {len(final_accounts)}, Users: {total_users}, Instance type: {instance_type}")
+            analysis_method = "intelligent" if wants_analysis else "manual"
+            self.log_operation('INFO', f"Final configuration - Accounts: {len(final_accounts)}, Users: {total_users}, Instance type: {instance_type}, Strategy: {self.capacity_strategy}, Method: {analysis_method}")
             
             # Final confirmation
-            confirm = input(f"\n🚀 Create {total_users} EC2 instances across {len(final_accounts)} accounts? (y/N): ").lower().strip()
+            confirm = input(f"\n🚀 Create {total_users} EC2 instances across {len(final_accounts)} accounts using {self.capacity_strategy} strategy? (y/N): ").lower().strip()
             self.log_operation('INFO', f"Final confirmation: '{confirm}'")
             
             if confirm != 'y':
@@ -1916,25 +2433,39 @@ class EC2InstanceManager:
                 print("❌ Instance creation cancelled")
                 return
             
-            # Create instances (rest of the method remains the same...)
+            # Create instances
             print(f"\n🔄 Starting instance creation...")
-            self.log_operation('INFO', f"🔄 Beginning instance creation for {total_users} users")
+            self.log_operation('INFO', f"🔄 Beginning instance creation for {total_users} users with {self.capacity_strategy} strategy")
             
             created_instances, failed_instances = self.create_instances_for_selected_accounts(
                 final_accounts,
                 instance_type=instance_type,
-                capacity_type=capacity_type,  # Add this line
                 wait_for_running=True
             )
             
-            # Display summary (rest remains the same...)
-            print(f"\n🎯" * 25 + " CREATION SUMMARY " + "🎯" * 25)
+            # Display summary and save reports
+            print(f"\n🎯" + "="*25 + " CREATION SUMMARY " + "="*25)
             print("=" * 100)
             print(f"✅ Total instances created: {len(created_instances)}")
             print(f"❌ Total instances failed: {len(failed_instances)}")
+            print(f"⚡ Strategy used: {self.capacity_strategy}")
+            print(f"🔍 Analysis method: {'Intelligent (Spot analysis)' if wants_analysis else 'Manual selection'}")
             
-            self.log_operation('INFO', f"FINAL RESULTS - Created: {len(created_instances)}, Failed: {len(failed_instances)}")
+            # Calculate capacity distribution
+            capacity_stats = {}
+            for instance in created_instances:
+                actual_capacity = instance.get('actual_capacity_used', 'unknown')
+                capacity_stats[actual_capacity] = capacity_stats.get(actual_capacity, 0) + 1
             
+            if capacity_stats:
+                print(f"📊 Actual capacity distribution:")
+                for capacity_type, count in capacity_stats.items():
+                    print(f"   • {capacity_type}: {count} instances")
+            
+            self.log_operation('INFO', f"FINAL RESULTS - Created: {len(created_instances)}, Failed: {len(failed_instances)}, Strategy: {self.capacity_strategy}, Distribution: {capacity_stats}")
+            
+            # ... rest of existing summary and reporting code ...
+
             if created_instances:
                 print(f"\n✅ Successfully Created Instances:")
                 print("-" * 80)
@@ -1994,7 +2525,7 @@ class EC2InstanceManager:
         except Exception as e:
             self.log_operation('ERROR', f"FATAL ERROR in main execution: {str(e)}")
             raise
-        
+            
 def main():
     """Main function"""
     try:

@@ -106,3 +106,4 @@ dmypy.json
 /user_instructions_*
 /aws_resource_creation_*
 /ultra_ec2_cleanup_*
+/ec2_cleanup_*

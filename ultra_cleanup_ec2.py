@@ -358,7 +358,7 @@ class UltraEC2CleanupManager:
             return False
         
     def clear_security_group_rules(self, ec2_client, sg_id):
-        """Clear all ingress and egress rules from a security group"""
+        """Clear all ingress and egress rules from a security group, handling cross-references"""
         try:
             self.log_operation('INFO', f"🧹 Clearing rules for security group {sg_id}")
             
@@ -380,26 +380,52 @@ class UltraEC2CleanupManager:
             rules_cleared = 0
             rules_failed = 0
             
-            # Clear ingress rules
+            # 🔥 Clear ingress rules (including cross-references)
             if ingress_rules:
                 self.log_operation('INFO', f"Removing {len(ingress_rules)} ingress rules from {sg_id} ({sg_name})")
-                try:
-                    ec2_client.revoke_security_group_ingress(
-                        GroupId=sg_id,
-                        IpPermissions=ingress_rules
-                    )
-                    rules_cleared += len(ingress_rules)
-                    self.log_operation('INFO', f"✅ Successfully removed {len(ingress_rules)} ingress rules from {sg_id}")
-                except ClientError as e:
-                    error_code = e.response['Error']['Code']
-                    if error_code == 'InvalidGroupId.NotFound':
-                        self.log_operation('INFO', f"Security group {sg_id} no longer exists")
-                        return True
-                    else:
-                        self.log_operation('ERROR', f"Failed to remove ingress rules from {sg_id}: {e}")
-                        rules_failed += len(ingress_rules)
+                
+                # Process rules one by one to handle cross-references better
+                for rule_index, rule in enumerate(ingress_rules):
+                    try:
+                        # Log rule details for debugging
+                        protocol = rule.get('IpProtocol', 'unknown')
+                        from_port = rule.get('FromPort', 'N/A')
+                        to_port = rule.get('ToPort', 'N/A')
+                        
+                        # Check if rule references other security groups
+                        sg_references = rule.get('UserIdGroupPairs', [])
+                        ip_ranges = rule.get('IpRanges', [])
+                        
+                        if sg_references:
+                            ref_groups = [ref.get('GroupId', 'unknown') for ref in sg_references]
+                            self.log_operation('INFO', f"  Rule {rule_index + 1}: {protocol}:{from_port}-{to_port} references SGs: {ref_groups}")
+                        else:
+                            self.log_operation('INFO', f"  Rule {rule_index + 1}: {protocol}:{from_port}-{to_port} from IPs: {[ip.get('CidrIp', 'unknown') for ip in ip_ranges]}")
+                        
+                        # Try to remove this specific rule
+                        ec2_client.revoke_security_group_ingress(
+                            GroupId=sg_id,
+                            IpPermissions=[rule]
+                        )
+                        rules_cleared += 1
+                        self.log_operation('INFO', f"  ✅ Successfully removed ingress rule {rule_index + 1}")
+                        
+                    except ClientError as e:
+                        error_code = e.response['Error']['Code']
+                        if error_code == 'InvalidGroupId.NotFound':
+                            self.log_operation('INFO', f"  Security group {sg_id} no longer exists")
+                            return True
+                        elif error_code == 'InvalidPermission.NotFound':
+                            self.log_operation('INFO', f"  Ingress rule {rule_index + 1} already removed")
+                            rules_cleared += 1
+                        else:
+                            self.log_operation('ERROR', f"  ❌ Failed to remove ingress rule {rule_index + 1}: {e}")
+                            rules_failed += 1
+                    except Exception as e:
+                        self.log_operation('ERROR', f"  ❌ Unexpected error removing ingress rule {rule_index + 1}: {e}")
+                        rules_failed += 1
             
-            # Clear egress rules (but keep the default allow-all rule if it exists)
+            # 🔥 Clear egress rules (but keep the default allow-all rule)
             if egress_rules:
                 # Filter out the default egress rule (0.0.0.0/0 for all traffic)
                 non_default_egress = []
@@ -418,21 +444,47 @@ class UltraEC2CleanupManager:
                 
                 if non_default_egress:
                     self.log_operation('INFO', f"Removing {len(non_default_egress)} non-default egress rules from {sg_id} ({sg_name})")
-                    try:
-                        ec2_client.revoke_security_group_egress(
-                            GroupId=sg_id,
-                            IpPermissions=non_default_egress
-                        )
-                        rules_cleared += len(non_default_egress)
-                        self.log_operation('INFO', f"✅ Successfully removed {len(non_default_egress)} egress rules from {sg_id}")
-                    except ClientError as e:
-                        error_code = e.response['Error']['Code']
-                        if error_code == 'InvalidGroupId.NotFound':
-                            self.log_operation('INFO', f"Security group {sg_id} no longer exists")
-                            return True
-                        else:
-                            self.log_operation('ERROR', f"Failed to remove egress rules from {sg_id}: {e}")
-                            rules_failed += len(non_default_egress)
+                    
+                    # Process egress rules one by one
+                    for rule_index, rule in enumerate(non_default_egress):
+                        try:
+                            # Log rule details for debugging
+                            protocol = rule.get('IpProtocol', 'unknown')
+                            from_port = rule.get('FromPort', 'N/A')
+                            to_port = rule.get('ToPort', 'N/A')
+                            
+                            # Check if rule references other security groups
+                            sg_references = rule.get('UserIdGroupPairs', [])
+                            ip_ranges = rule.get('IpRanges', [])
+                            
+                            if sg_references:
+                                ref_groups = [ref.get('GroupId', 'unknown') for ref in sg_references]
+                                self.log_operation('INFO', f"  Egress Rule {rule_index + 1}: {protocol}:{from_port}-{to_port} references SGs: {ref_groups}")
+                            else:
+                                self.log_operation('INFO', f"  Egress Rule {rule_index + 1}: {protocol}:{from_port}-{to_port} to IPs: {[ip.get('CidrIp', 'unknown') for ip in ip_ranges]}")
+                            
+                            # Try to remove this specific rule
+                            ec2_client.revoke_security_group_egress(
+                                GroupId=sg_id,
+                                IpPermissions=[rule]
+                            )
+                            rules_cleared += 1
+                            self.log_operation('INFO', f"  ✅ Successfully removed egress rule {rule_index + 1}")
+                            
+                        except ClientError as e:
+                            error_code = e.response['Error']['Code']
+                            if error_code == 'InvalidGroupId.NotFound':
+                                self.log_operation('INFO', f"  Security group {sg_id} no longer exists")
+                                return True
+                            elif error_code == 'InvalidPermission.NotFound':
+                                self.log_operation('INFO', f"  Egress rule {rule_index + 1} already removed")
+                                rules_cleared += 1
+                            else:
+                                self.log_operation('ERROR', f"  ❌ Failed to remove egress rule {rule_index + 1}: {e}")
+                                rules_failed += 1
+                        except Exception as e:
+                            self.log_operation('ERROR', f"  ❌ Unexpected error removing egress rule {rule_index + 1}: {e}")
+                            rules_failed += 1
                 else:
                     self.log_operation('INFO', f"No non-default egress rules to remove from {sg_id}")
             
@@ -444,8 +496,8 @@ class UltraEC2CleanupManager:
             
             # Wait briefly for rule changes to propagate
             if rules_cleared > 0:
-                self.log_operation('INFO', f"Waiting 5 seconds for rule changes to propagate...")
-                time.sleep(5)
+                self.log_operation('INFO', f"Waiting 10 seconds for rule changes to propagate...")
+                time.sleep(10)  # Increased wait time for cross-references
             
             return rules_failed == 0
             
@@ -544,14 +596,25 @@ class UltraEC2CleanupManager:
             # Create EC2 client
             ec2_client = self.create_ec2_client(access_key, secret_key, region)
             
-            # Get all instances
-            instances = self.get_all_instances_in_region(ec2_client, region, account_name)
+            # 🔥 Initialize variables first to avoid scope issues
+            instances = []
+            security_groups = []
+            attached_sgs = []
+            unattached_sgs = []
             
-            # Get all security groups
-            security_groups = self.get_all_security_groups_in_region(ec2_client, region, account_name)
-            
-            # Correlate instances and security groups
-            attached_sgs, unattached_sgs = self.correlate_instances_and_security_groups(instances, security_groups)
+            try:
+                # Get all instances
+                instances = self.get_all_instances_in_region(ec2_client, region, account_name)
+                
+                # Get all security groups
+                security_groups = self.get_all_security_groups_in_region(ec2_client, region, account_name)
+                
+                # Correlate instances and security groups
+                attached_sgs, unattached_sgs = self.correlate_instances_and_security_groups(instances, security_groups)
+                
+            except Exception as discovery_error:
+                self.log_operation('ERROR', f"Error during resource discovery in {account_name} ({region}): {discovery_error}")
+                # Continue with whatever we managed to discover
             
             region_summary = {
                 'account_name': account_name,
@@ -600,35 +663,71 @@ class UltraEC2CleanupManager:
                     except Exception as e:
                         self.log_operation('ERROR', f"Error deleting unattached security group {sg['group_id']}: {e}")
             
-            # Step 3: Delete attached security groups (with retries)
+            # Step 3: 🔥 ENHANCED - Delete attached security groups with multiple passes for cross-references
             if attached_sgs:
                 self.log_operation('INFO', f"🗑️  Deleting {len(attached_sgs)} attached security groups in {account_name} ({region})")
                 
-                max_retries = 3
-                retry_delay = 60  # seconds
+                max_retries = 5  # Increased retries for cross-references
+                retry_delay = 30  # Reduced delay between retries
+                
+                remaining_sgs = attached_sgs.copy()
                 
                 for retry in range(max_retries):
-                    remaining_sgs = []
+                    self.log_operation('INFO', f"🔄 Security group deletion attempt {retry + 1}/{max_retries}")
                     
-                    for sg in attached_sgs:
+                    # Track progress in this iteration
+                    sgs_deleted_this_round = 0
+                    still_remaining = []
+                    
+                    for sg in remaining_sgs:
                         try:
                             success = self.delete_security_group(ec2_client, sg, force_delete=True)
-                            if not success:
-                                remaining_sgs.append(sg)
+                            if success:
+                                sgs_deleted_this_round += 1
+                                self.log_operation('INFO', f"✅ Deleted {sg['group_id']} in attempt {retry + 1}")
+                            else:
+                                still_remaining.append(sg)
+                                self.log_operation('WARNING', f"⏳ {sg['group_id']} still has dependencies, will retry")
                         except Exception as e:
                             self.log_operation('ERROR', f"Error deleting attached security group {sg['group_id']}: {e}")
-                            remaining_sgs.append(sg)
+                            still_remaining.append(sg)
+                    
+                    self.log_operation('INFO', f"Attempt {retry + 1} results: {sgs_deleted_this_round} deleted, {len(still_remaining)} remaining")
+                    
+                    # Update remaining list
+                    remaining_sgs = still_remaining
                     
                     if not remaining_sgs:
                         self.log_operation('INFO', f"✅ All attached security groups deleted in {account_name} ({region})")
                         break
                     
+                    # If no progress was made and we have remaining groups, try clearing rules again
+                    if sgs_deleted_this_round == 0 and remaining_sgs and retry < max_retries - 1:
+                        self.log_operation('INFO', f"🧹 No progress made, re-clearing rules for remaining {len(remaining_sgs)} security groups")
+                        for sg in remaining_sgs:
+                            try:
+                                self.clear_security_group_rules(ec2_client, sg['group_id'])
+                            except Exception as e:
+                                self.log_operation('ERROR', f"Error re-clearing rules for {sg['group_id']}: {e}")
+                    
                     if retry < max_retries - 1:
-                        self.log_operation('INFO', f"⏳ {len(remaining_sgs)} security groups still have dependencies. Waiting {retry_delay}s before retry {retry + 2}/{max_retries}")
+                        self.log_operation('INFO', f"⏳ Waiting {retry_delay}s before retry {retry + 2}/{max_retries}")
                         time.sleep(retry_delay)
-                        attached_sgs = remaining_sgs
-                    else:
-                        self.log_operation('WARNING', f"⚠️  {len(remaining_sgs)} security groups could not be deleted after {max_retries} retries")
+                
+                if remaining_sgs:
+                    self.log_operation('WARNING', f"⚠️  {len(remaining_sgs)} security groups could not be deleted after {max_retries} retries")
+                    self.log_operation('WARNING', f"Remaining security groups: {[sg['group_id'] for sg in remaining_sgs]}")
+                    
+                    # Log detailed information about remaining security groups
+                    for sg in remaining_sgs:
+                        try:
+                            response = ec2_client.describe_security_groups(GroupIds=[sg['group_id']])
+                            sg_details = response['SecurityGroups'][0]
+                            ingress_count = len(sg_details.get('IpPermissions', []))
+                            egress_count = len(sg_details.get('IpPermissionsEgress', []))
+                            self.log_operation('WARNING', f"  {sg['group_id']} still has {ingress_count} ingress, {egress_count} egress rules")
+                        except Exception as e:
+                            self.log_operation('ERROR', f"  Could not get details for {sg['group_id']}: {e}")
             
             self.log_operation('INFO', f"✅ Cleanup completed for {account_name} ({region})")
             return True
