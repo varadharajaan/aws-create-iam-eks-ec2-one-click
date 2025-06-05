@@ -1,50 +1,602 @@
-{
-  "accounts": {
-    "account01": {
-      "account_id": "676004093025",
-      "email": "varadharajaan@proton.me",
-      "access_key": "AKIAZ**********B5Y5C",
-      "secret_key": "qUZYX******************************SC8ef"
-    },
-    "account02": {
-      "account_id": "996335889295",
-      "email": "varadharajan.ai@pm.me",
-      "access_key": "AKIA6**********EANWN",
-      "secret_key": "kc+83******************************pTk5T"
-    },
-    "account03": {
-      "account_id": "534739421744",
-      "email": "varadharajan.ai@proton.me",
-      "access_key": "AKIAX**********IU6GG",
-      "secret_key": "SU4fu******************************mgnlc"
-    },
-    "account04": {
-      "account_id": "135521914217",
-      "email": "mergerawsaccount001@proton.me",
-      "access_key": "AKIAR**********2NNVL",
-      "secret_key": "pQbRr******************************0vjJG"
-    },
-    "account05": {
-      "account_id": "984974410376",
-      "email": "varadharajan_cloud_001@proton.me",
-      "access_key": "AKIA6**********HGC3P",
-      "secret_key": "05ifH******************************B1ow1"
-    }
-  },
-  "user_settings": {
-    "password": "DemoUser@123",
-    "allowed_instance_types": [
-      "t2.micro",
-      "t3.micro",
-      "c6a.large"
-    ],
-    "users_per_account": 5,
-    "user_regions": [
-      "us-east-1",
-      "us-east-2",
-      "us-west-1",
-      "us-west-2",
-      "ap-south-1"
-    ]
-  }
-}
+<div align="center">
+  
+# 🚀 AWS Infrastructure One-Click Automation Suite
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![AWS](https://img.shields.io/badge/AWS-Cloud-orange?style=for-the-badge&logo=amazon-aws)](https://aws.amazon.com/)
+[![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+<p align="center">
+  <img src="https://img.shields.io/badge/IAM-Identity%20Management-FF9900?style=flat-square&logo=amazon-aws" />
+  <img src="https://img.shields.io/badge/EKS-Kubernetes-326CE5?style=flat-square&logo=kubernetes" />
+  <img src="https://img.shields.io/badge/EC2-Compute-FF9900?style=flat-square&logo=amazon-ec2" />
+</p>
+
+### 🎯 **Automate Your AWS Infrastructure with a Single Click!**
+
+*Streamline the creation and management of IAM roles, EKS clusters, and EC2 instances with our powerful automation suite.*
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [✨ Features](#-features)
+- [🏗️ Architecture Overview](#️-architecture-overview)
+- [📦 Prerequisites](#-prerequisites)
+- [🔧 Installation](#-installation)
+- [🚀 Quick Start](#-quick-start)
+- [📖 Detailed Usage Guide](#-detailed-usage-guide)
+  - [IAM Configuration](#-iam-configuration)
+  - [EKS Cluster Setup](#-eks-cluster-setup)
+  - [EC2 Instance Management](#-ec2-instance-management)
+- [🔐 Security Best Practices](#-security-best-practices)
+- [🛠️ Troubleshooting](#️-troubleshooting)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+- [👨‍💻 Author](#-author)
+
+---
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🔐 IAM Management
+- **Automated Role Creation**
+- **Policy Attachment**
+- **Service-Linked Roles**
+- **Cross-Account Access**
+
+</td>
+<td width="33%" valign="top">
+
+### ☸️ EKS Automation
+- **Cluster Provisioning**
+- **Node Group Management**
+- **RBAC Configuration**
+- **Add-ons Installation**
+
+</td>
+<td width="33%" valign="top">
+
+### 💻 EC2 Operations
+- **Instance Launch**
+- **Security Group Setup**
+- **Auto-scaling Config**
+- **Volume Management**
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🏗️ Architecture Overview
+
+```mermaid
+graph TB
+    A[🎯 One-Click Automation] --> B[🔐 IAM Module]
+    A --> C[☸️ EKS Module]
+    A --> D[💻 EC2 Module]
+    
+    B --> B1[Create Roles]
+    B --> B2[Attach Policies]
+    B --> B3[Generate Keys]
+    
+    C --> C1[Create Cluster]
+    C --> C2[Configure Networking]
+    C --> C3[Deploy Node Groups]
+    
+    D --> D1[Launch Instances]
+    D --> D2[Configure Security]
+    D --> D3[Setup Monitoring]
+    
+    style A fill:#f9f,stroke:#333,stroke-width:4px
+    style B fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bfb,stroke:#333,stroke-width:2px
+    style D fill:#fbb,stroke:#333,stroke-width:2px
+```
+
+---
+
+## 📦 Prerequisites
+
+<details>
+<summary><b>🔍 Click to expand prerequisites</b></summary>
+
+### System Requirements
+- **Python**: 3.8 or higher
+- **AWS CLI**: Version 2.x
+- **kubectl**: Latest stable version
+- **eksctl**: 0.150.0 or higher
+
+### AWS Requirements
+- Active AWS Account
+- Appropriate IAM permissions
+- Configured AWS credentials
+
+### Installation Commands
+
+```bash
+# Install Python dependencies
+pip install boto3 awscli pyyaml
+
+# Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install eksctl
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
+```
+
+</details>
+
+---
+
+## 🔧 Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click.git
+
+# Navigate to the project directory
+cd aws-create-iam-eks-ec2-one-click
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Configure AWS credentials
+aws configure
+```
+
+---
+
+## 🚀 Quick Start
+
+<div align="center">
+
+### **Launch Everything with One Command!**
+
+```bash
+python main.py --all
+```
+
+</div>
+
+---
+
+## 📖 Detailed Usage Guide
+
+### 🔐 IAM Configuration
+
+<details>
+<summary><b>📁 create_iam_roles.py</b> - Automated IAM Role Management</summary>
+
+#### Description
+This script automates the creation and configuration of IAM roles required for EKS clusters and EC2 instances.
+
+#### Features
+- ✅ Creates EKS service roles
+- ✅ Sets up node instance profiles
+- ✅ Configures trust relationships
+- ✅ Attaches necessary policies
+
+#### Usage
+
+```bash
+# Run the IAM role creation script
+python create_iam_roles.py
+
+# With custom configuration
+python create_iam_roles.py --config config/iam_config.yaml
+
+# Dry run mode (preview changes)
+python create_iam_roles.py --dry-run
+```
+
+#### Configuration Example
+
+```yaml
+# config/iam_config.yaml
+roles:
+  eks_cluster_role:
+    name: "MyEKSClusterRole"
+    trust_policy: "eks.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+  
+  node_instance_role:
+    name: "MyEKSNodeInstanceRole"
+    trust_policy: "ec2.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+      - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+```
+
+</details>
+
+### ☸️ EKS Cluster Setup
+
+<details>
+<summary><b>📁 create_eks_cluster.py</b> - Kubernetes Cluster Automation</summary>
+
+#### Description
+Provisions a production-ready EKS cluster with best practices for security and scalability.
+
+#### Features
+- ✅ Multi-AZ deployment
+- ✅ Private endpoint access
+- ✅ Managed node groups
+- ✅ Auto-scaling configuration
+
+#### Usage
+
+```bash
+# Create a basic EKS cluster
+python create_eks_cluster.py --cluster-name my-cluster --region us-east-1
+
+# Advanced configuration with node groups
+python create_eks_cluster.py \
+  --cluster-name production-cluster \
+  --region us-west-2 \
+  --node-count 3 \
+  --node-type t3.medium \
+  --kubernetes-version 1.27
+
+# Use configuration file
+python create_eks_cluster.py --config config/eks_config.yaml
+```
+
+#### Configuration Example
+
+```yaml
+# config/eks_config.yaml
+cluster:
+  name: "my-production-cluster"
+  version: "1.27"
+  region: "us-west-2"
+  
+  networking:
+    vpc_id: "vpc-xxxxx"  # Optional: Use existing VPC
+    subnet_ids:          # Optional: Use existing subnets
+      - "subnet-xxxxx"
+      - "subnet-yyyyy"
+    security_groups:
+      - "sg-xxxxx"
+    endpoint_private_access: true
+    endpoint_public_access: true
+    public_access_cidrs:
+      - "0.0.0.0/0"
+  
+  node_groups:
+    - name: "primary-nodes"
+      instance_types:
+        - "t3.medium"
+        - "t3.large"
+      scaling:
+        min_size: 2
+        max_size: 10
+        desired_size: 3
+      labels:
+        role: "worker"
+        environment: "production"
+      
+    - name: "spot-nodes"
+      instance_types:
+        - "t3.medium"
+      capacity_type: "SPOT"
+      scaling:
+        min_size: 1
+        max_size: 5
+        desired_size: 2
+  
+  addons:
+    - name: "vpc-cni"
+      version: "latest"
+    - name: "kube-proxy"
+      version: "latest"
+    - name: "coredns"
+      version: "latest"
+```
+
+#### Post-Deployment Steps
+
+```bash
+# Update kubeconfig
+aws eks update-kubeconfig --region us-west-2 --name my-production-cluster
+
+# Verify cluster access
+kubectl get nodes
+
+# Deploy sample application
+kubectl apply -f examples/sample-app.yaml
+```
+
+</details>
+
+### 💻 EC2 Instance Management
+
+<details>
+<summary><b>📁 create_ec2_instances.py</b> - Compute Instance Automation</summary>
+
+#### Description
+Automates EC2 instance provisioning with security best practices and monitoring setup.
+
+#### Features
+- ✅ Auto-generates security groups
+- ✅ Configures CloudWatch monitoring
+- ✅ Sets up Systems Manager access
+- ✅ Implements tagging strategy
+
+#### Usage
+
+```bash
+# Launch a single instance
+python create_ec2_instances.py \
+  --instance-type t3.micro \
+  --ami-id ami-xxxxxx \
+  --key-name my-key-pair
+
+# Launch multiple instances with configuration
+python create_ec2_instances.py --config config/ec2_config.yaml
+
+# Launch with auto-scaling group
+python create_ec2_instances.py \
+  --auto-scaling \
+  --min-size 2 \
+  --max-size 10 \
+  --desired-capacity 4
+```
+
+#### Configuration Example
+
+```yaml
+# config/ec2_config.yaml
+instances:
+  web_servers:
+    count: 3
+    instance_type: "t3.medium"
+    ami_id: "ami-0c55b159cbfafe1f0"  # Amazon Linux 2
+    key_name: "my-key-pair"
+    
+    network:
+      vpc_id: "vpc-xxxxx"
+      subnet_id: "subnet-xxxxx"
+      assign_public_ip: true
+      
+    security_groups:
+      - name: "web-server-sg"
+        rules:
+          - protocol: "tcp"
+            port: 80
+            source: "0.0.0.0/0"
+          - protocol: "tcp"
+            port: 443
+            source: "0.0.0.0/0"
+          - protocol: "tcp"
+            port: 22
+            source: "10.0.0.0/8"
+    
+    storage:
+      - device_name: "/dev/sda1"
+        size: 30
+        type: "gp3"
+        encrypted: true
+      - device_name: "/dev/sdf"
+        size: 100
+        type: "gp3"
+        encrypted: true
+    
+    user_data: |
+      #!/bin/bash
+      yum update -y
+      yum install -y httpd
+      systemctl start httpd
+      systemctl enable httpd
+      echo "<h1>Hello from AWS EC2</h1>" > /var/www/html/index.html
+    
+    tags:
+      Name: "WebServer"
+      Environment: "Production"
+      ManagedBy: "Terraform"
+      CostCenter: "Engineering"
+  
+  database_servers:
+    count: 2
+    instance_type: "m5.large"
+    # ... additional configuration
+```
+
+</details>
+
+### 🔄 Utility Scripts
+
+<details>
+<summary><b>📁 utils/</b> - Helper Scripts and Utilities</summary>
+
+#### 📄 **cleanup.py** - Resource Cleanup
+```bash
+# Clean up all resources
+python utils/cleanup.py --all
+
+# Clean up specific resources
+python utils/cleanup.py --eks --ec2
+
+# Dry run mode
+python utils/cleanup.py --all --dry-run
+```
+
+#### 📄 **validate.py** - Configuration Validation
+```bash
+# Validate all configurations
+python utils/validate.py
+
+# Validate specific config
+python utils/validate.py --config config/eks_config.yaml
+```
+
+#### 📄 **monitor.py** - Resource Monitoring
+```bash
+# Monitor all resources
+python utils/monitor.py
+
+# Export monitoring data
+python utils/monitor.py --export --format json
+```
+
+</details>
+
+---
+
+## 🔐 Security Best Practices
+
+<div align="center">
+
+| 🛡️ **Security Measure** | 📝 **Description** | ✅ **Implementation** |
+|-------------------------|-------------------|----------------------|
+| **IAM Least Privilege** | Grant minimum required permissions | Automated policy generation |
+| **Encryption at Rest** | Encrypt all data volumes | Default EBS encryption |
+| **Network Isolation** | Private subnets for sensitive workloads | VPC configuration templates |
+| **Secrets Management** | Use AWS Secrets Manager | Integration scripts included |
+| **Audit Logging** | CloudTrail and VPC Flow Logs | Automatic enablement |
+
+</div>
+
+---
+
+## 🛠️ Troubleshooting
+
+<details>
+<summary><b>Common Issues and Solutions</b></summary>
+
+### 🔴 IAM Permission Errors
+```bash
+# Error: User is not authorized to perform: iam:CreateRole
+# Solution: Ensure your AWS user has the following policy attached:
+aws iam attach-user-policy --user-name YOUR_USER --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
+```
+
+### 🔴 EKS Cluster Creation Fails
+```bash
+# Error: Cannot create cluster, VPC not found
+# Solution: Ensure VPC exists or let the script create one:
+python create_eks_cluster.py --create-vpc
+```
+
+### 🔴 EC2 Key Pair Issues
+```bash
+# Error: Key pair 'my-key' does not exist
+# Solution: Create a new key pair:
+aws ec2 create-key-pair --key-name my-key --query 'KeyMaterial' --output text > my-key.pem
+chmod 400 my-key.pem
+```
+
+### 🔴 Kubectl Connection Issues
+```bash
+# Error: Unable to connect to the server
+# Solution: Update kubeconfig:
+aws eks update-kubeconfig --region REGION --name CLUSTER_NAME
+
+# Verify:
+kubectl cluster-info
+```
+
+</details>
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+
+### How to Contribute
+
+1. 🍴 Fork the repository
+2. 🌿 Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. 💻 Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. 📤 Push to the branch (`git push origin feature/AmazingFeature`)
+5. 🔄 Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+```
+MIT License
+
+Copyright (c) 2025 varadharajaan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 👨‍💻 Author
+
+<div align="center">
+
+### **Created with ❤️ by varadharajaan**
+
+<a href="https://github.com/varadharajaan">
+  <img src="https://img.shields.io/badge/GitHub-varadharajaan-181717?style=for-the-badge&logo=github" alt="GitHub Profile">
+</a>
+
+<br>
+
+[![GitHub followers](https://img.shields.io/github/followers/varadharajaan?label=Follow&style=social)](https://github.com/varadharajaan)
+
+#### 📊 Repository Stats
+
+![GitHub last commit](https://img.shields.io/github/last-commit/varadharajaan/aws-create-iam-eks-ec2-one-click)
+![GitHub issues](https://img.shields.io/github/issues/varadharajaan/aws-create-iam-eks-ec2-one-click)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/varadharajaan/aws-create-iam-eks-ec2-one-click)
+![GitHub code size](https://img.shields.io/github/languages/code-size/varadharajaan/aws-create-iam-eks-ec2-one-click)
+
+</div>
+
+---
+
+<div align="center">
+
+### 🌟 **Star this repository if you find it helpful!**
+
+[![GitHub stars](https://img.shields.io/github/stars/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/network/members)
+[![GitHub watchers](https://img.shields.io/github/watchers/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/watchers)
+
+### 📧 **Contact**
+
+For questions and support, please open an issue in the GitHub repository.
+
+</div>

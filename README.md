@@ -1,234 +1,564 @@
-# aws-create-iam-eks-ec2-one-click
+<div align="center">
+  
+# 🚀 AWS Infrastructure One-Click Automation Suite
 
-# Interactive EKS Cluster Manager
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![AWS](https://img.shields.io/badge/AWS-Cloud-orange?style=for-the-badge&logo=amazon-aws)](https://aws.amazon.com/)
+[![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-This tool allows you to interactively create and manage AWS EKS clusters for multiple IAM users and AWS accounts. It features dynamic selection of EC2 instance types, per-user customization, robust logging, and output of cluster access instructions.
+<p align="center">
+  <img src="https://img.shields.io/badge/IAM-Identity%20Management-FF9900?style=flat-square&logo=amazon-aws" />
+  <img src="https://img.shields.io/badge/EKS-Kubernetes-326CE5?style=flat-square&logo=kubernetes" />
+  <img src="https://img.shields.io/badge/EC2-Compute-FF9900?style=flat-square&logo=amazon-ec2" />
+</p>
 
-## Features
+### 🎯 **Automate Your AWS Infrastructure with a Single Click!**
 
-- **Interactive Selection:** Choose AWS accounts, users, and per-user cluster settings.
-- **Dynamic Instance Type Selection:** Allowed instance types and the default type are loaded from `ec2-region-ami-mapping.json`. Users can pick instance types for each cluster interactively.
-- **EKS Best Practices:** Creates clusters with strong defaults (1 node minimum, disk size 20GB, AL2_x86_64 AMI by default).
-- **User Access Automation:** Configures `aws-auth` ConfigMap for IAM user access.
-- **Access Verification:** Optionally verifies user access after cluster creation.
-- **Command Generation:** Saves `kubectl` and AWS CLI commands for both admin and users.
-- **Result Logging:** Outputs results and summaries as JSON and TXT reports.
+*Streamline the creation and management of IAM roles, EKS clusters, and EC2 instances with our powerful automation suite.*
 
-## Prerequisites
-
-- Python 3.8+
-- AWS credentials (for admin and users)
-- `boto3` library
-- IAM permissions to create EKS clusters, nodegroups, IAM roles, and update ConfigMaps
-- The configuration file: `ec2-region-ami-mapping.json` in the working directory
-
-## Setup
-
-1. **Clone this repository:**
-   ```sh
-   git clone <your-repo-url>
-   cd <repo-directory>
-   ```
-
-2. **Install dependencies:**
-   ```sh
-   pip install boto3
-   ```
-
-3. **Prepare configuration files:**
-   - `ec2-region-ami-mapping.json` — defines allowed instance types, AMIs per region, and other EKS settings.
-   - `user_config.json` — your IAM user definitions (see your existing format).
-   - `admin_config.json` — AWS admin credentials.
-
-## Usage
-
-```sh
-python main.py
-```
-
-### Workflow
-
-1. **Welcome screen**: Shows available accounts, users, and instance types (from `ec2-region-ami-mapping.json`).
-2. **Account selection**: Choose one or more AWS accounts to manage.
-3. **User selection**: Choose all users or specific users per account.
-4. **Instance type selection**: For each user or cluster, select an instance type from the allowed types. The default is set in the config file.
-5. **Cluster configuration**: Set maximum node count; default is 3 (min 1, max 10).
-6. **Confirmation**: Review cluster summary before proceeding.
-7. **Cluster creation**: Tool creates clusters and nodegroups, configures user access, and verifies.
-8. **Results**: Detailed commands and cluster info saved as JSON and TXT.
-
-### Example `ec2-region-ami-mapping.json`
-
-```json
-{
-  "region_ami_mapping": {
-    "us-east-1": "ami-0953476d60561c955",
-
-    "us-east-2": "ami-06c8f2ec674c67112"
-  },
-  "allowed_instance_types": [
-    "t3.micro",
-    "t2.micro",
-    "c6a.large"
-  ],
-  "default_instance_type_index": 2,   // 0-based index, so 2 = c6a.large
-  "eks_config": {
-    "supported_versions": ["1.27", "1.28", "1.29"],
-    "default_version": "1.27"
-  }
-}
-```
-
-## Output
-
-- `eks_clusters_created_<timestamp>.json` — Full cluster creation details
-- `eks_clusters_simple_<timestamp>.txt` — Human-readable cluster summary
-- `kubectl_commands_<timestamp>.txt` — All generated `kubectl`/CLI commands
-
-## Notes
-
-- The script is interactive and will prompt for selections at each step.
-- If `default_instance_type_index` is not provided, the first item in the array is used as default.
-- If `ec2-region-ami-mapping.json` is missing, sensible defaults will be used.
-
-# AWS Resource Manager
-
-## Overview
-
-**AWS Resource Manager** is a Python tool that helps you manage, analyze, and audit your AWS EKS clusters and EC2 instances using local state files and live AWS API calls. It provides powerful interactive features for live lookups, cost calculations, and consolidated reporting, supporting multi-account and multi-region environments.
+</div>
 
 ---
 
-## Features
+## 📋 Table of Contents
 
-- **Interactive Resource Selection**  
-  Browse and select EKS or EC2 state files grouped by date, with user-friendly prompts for each day's files.
-
-- **Live AWS Status Lookup**  
-  Instantly check the current live status of EKS clusters or EC2 instances using your AWS root credentials.
-
-- **Live Cost Calculation**  
-  Calculate up-to-date costs for EKS clusters and EC2 instances, including control plane, node, and storage costs, based on real AWS resource information.
-
-- **Consolidated Reporting**  
-  Generates a single, consolidated status or cost report for each execution, with detailed breakdowns by account and resource.
-
-- **Direct Resource Lookup**  
-  Find a resource by name or ID and perform an immediate live lookup.
-
-- **Clear, Readable Output**  
-  - Files and timestamps displayed in readable IST format.
-  - Global continuous resource numbering across all files for easy selection.
-  - Summaries with clear totals and cost breakdowns.
+- [✨ Features](#-features)
+- [🏗️ Architecture Overview](#️-architecture-overview)
+- [📦 Prerequisites](#-prerequisites)
+- [🔧 Installation](#-installation)
+- [🚀 Quick Start](#-quick-start)
+- [📖 Detailed Usage Guide](#-detailed-usage-guide)
+  - [IAM Configuration](#-iam-configuration)
+  - [EKS Cluster Setup](#-eks-cluster-setup)
+  - [EC2 Instance Management](#-ec2-instance-management)
+- [🔐 Security Best Practices](#-security-best-practices)
+- [🛠️ Troubleshooting](#️-troubleshooting)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
 
 ---
 
-## Usage
+## ✨ Features
 
-### 1. **Setup**
+<table>
+<tr>
+<td width="33%" valign="top">
 
-- Python 3.7+
-- Required packages: `boto3`
-- Prepare an AWS accounts config file, e.g. `aws_accounts_config.json` (see below).
+### 🔐 IAM Management
+- **Automated Role Creation**
+- **Policy Attachment**
+- **Service-Linked Roles**
+- **Cross-Account Access**
 
-### 2. **Run the Tool**
+</td>
+<td width="33%" valign="top">
+
+### ☸️ EKS Automation
+- **Cluster Provisioning**
+- **Node Group Management**
+- **RBAC Configuration**
+- **Add-ons Installation**
+
+</td>
+<td width="33%" valign="top">
+
+### 💻 EC2 Operations
+- **Instance Launch**
+- **Security Group Setup**
+- **Auto-scaling Config**
+- **Volume Management**
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🏗️ Architecture Overview
+
+```mermaid
+graph TB
+    A[🎯 One-Click Automation] --> B[🔐 IAM Module]
+    A --> C[☸️ EKS Module]
+    A --> D[💻 EC2 Module]
+    
+    B --> B1[Create Roles]
+    B --> B2[Attach Policies]
+    B --> B3[Generate Keys]
+    
+    C --> C1[Create Cluster]
+    C --> C2[Configure Networking]
+    C --> C3[Deploy Node Groups]
+    
+    D --> D1[Launch Instances]
+    D --> D2[Configure Security]
+    D --> D3[Setup Monitoring]
+    
+    style A fill:#f9f,stroke:#333,stroke-width:4px
+    style B fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bfb,stroke:#333,stroke-width:2px
+    style D fill:#fbb,stroke:#333,stroke-width:2px
+```
+
+---
+
+## 📦 Prerequisites
+
+<details>
+<summary><b>🔍 Click to expand prerequisites</b></summary>
+
+### System Requirements
+- **Python**: 3.8 or higher
+- **AWS CLI**: Version 2.x
+- **kubectl**: Latest stable version
+- **eksctl**: 0.150.0 or higher
+
+### AWS Requirements
+- Active AWS Account
+- Appropriate IAM permissions
+- Configured AWS credentials
+
+### Installation Commands
 
 ```bash
-python ec2_eks_lookup_resource.py
+# Install Python dependencies
+pip install boto3 awscli pyyaml
+
+# Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Install eksctl
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
 ```
 
-Start in interactive mode. You’ll be prompted to select an operation:
+</details>
 
-- EKS Clusters (metadata + optional live lookup)
-- EC2 Instances (metadata + optional live lookup)
-- EKS/EC2 Live Cost Calculator (fetches current AWS data)
-- Direct live lookup (provide resource ID)
-- Exit
+---
 
-You can also provide a resource ID directly:
+## 🔧 Installation
 
 ```bash
-python ec2_eks_lookup_resource.py i-0ea27a17f321529f1
-python ec2_eks_lookup_resource.py eks-cluster-myteam-useast1
+# Clone the repository
+git clone https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click.git
+
+# Navigate to the project directory
+cd aws-create-iam-eks-ec2-one-click
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Configure AWS credentials
+aws configure
 ```
 
-Or use a custom config file:
+---
+
+## 🚀 Quick Start
+
+<div align="center">
+
+### **Launch Everything with One Command!**
 
 ```bash
-python ec2_eks_lookup_resource.py --config my_aws_config.json
+python main.py --all
 ```
 
-### 3. **File Selection**
-
-- The tool scans for EKS/EC2 state JSON files and groups them by date.
-- For each date, you’ll be asked whether to process the files from that day.
-- Each file’s timestamp is shown in readable IST format.
-
-### 4. **Resource Selection**
-
-- Resources across all selected files are numbered **continuously** (e.g., 1, 2, 3, ...).
-- You can select resources by number, by range (e.g., `1-5`), multiple (e.g., `2,4,7`), or `all`.
-
-### 5. **Reporting**
-
-- Reports (live status and cost) are saved per execution in `livestatus/YYYYMMDD/` or `livecost/YYYYMMDD/` folders.
-- Each report contains a full summary, detailed resource information, and breakdowns by account.
+</div>
 
 ---
 
-## AWS Accounts Config
+## 📖 Detailed Usage Guide
 
-Example (`aws_accounts_config.json`):
+### 🔐 IAM Configuration
 
-```json
-{
-  "accounts": {
-    "account01": {
-      "email": "aws-root@example.com",
-      "access_key": "AKIA....",
-      "secret_key": "..."
-    },
-    "account02": {
-      "email": "aws-root2@example.com",
-      "access_key": "...",
-      "secret_key": "..."
-    }
-  }
-}
+<details>
+<summary><b>📁 create_iam_roles.py</b> - Automated IAM Role Management</summary>
+
+#### Description
+This script automates the creation and configuration of IAM roles required for EKS clusters and EC2 instances.
+
+#### Features
+- ✅ Creates EKS service roles
+- ✅ Sets up node instance profiles
+- ✅ Configures trust relationships
+- ✅ Attaches necessary policies
+
+#### Usage
+
+```bash
+# Run the IAM role creation script
+python create_iam_roles.py
+
+# With custom configuration
+python create_iam_roles.py --config config/iam_config.yaml
+
+# Dry run mode (preview changes)
+python create_iam_roles.py --dry-run
 ```
 
+#### Configuration Example
+
+```yaml
+# config/iam_config.yaml
+roles:
+  eks_cluster_role:
+    name: "MyEKSClusterRole"
+    trust_policy: "eks.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+  
+  node_instance_role:
+    name: "MyEKSNodeInstanceRole"
+    trust_policy: "ec2.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+      - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+```
+
+</details>
+
+### ☸️ EKS Cluster Setup
+
+<details>
+<summary><b>📁 create_eks_cluster.py</b> - Kubernetes Cluster Automation</summary>
+
+#### Description
+Provisions a production-ready EKS cluster with best practices for security and scalability.
+
+#### Features
+- ✅ Multi-AZ deployment
+- ✅ Private endpoint access
+- ✅ Managed node groups
+- ✅ Auto-scaling configuration
+
+#### Usage
+
+```bash
+# Create a basic EKS cluster
+python create_eks_cluster.py --cluster-name my-cluster --region us-east-1
+
+# Advanced configuration with node groups
+python create_eks_cluster.py \
+  --cluster-name production-cluster \
+  --region us-west-2 \
+  --node-count 3 \
+  --node-type t3.medium \
+  --kubernetes-version 1.27
+
+# Use configuration file
+python create_eks_cluster.py --config config/eks_config.yaml
+```
+
+#### Configuration Example
+
+```yaml
+# config/eks_config.yaml
+cluster:
+  name: "my-production-cluster"
+  version: "1.27"
+  region: "us-west-2"
+  
+  networking:
+    vpc_id: "vpc-xxxxx"  # Optional: Use existing VPC
+    subnet_ids:          # Optional: Use existing subnets
+      - "subnet-xxxxx"
+      - "subnet-yyyyy"
+    security_groups:
+      - "sg-xxxxx"
+    endpoint_private_access: true
+    endpoint_public_access: true
+    public_access_cidrs:
+      - "0.0.0.0/0"
+  
+  node_groups:
+    - name: "primary-nodes"
+      instance_types:
+        - "t3.medium"
+        - "t3.large"
+      scaling:
+        min_size: 2
+        max_size: 10
+        desired_size: 3
+      labels:
+        role: "worker"
+        environment: "production"
+      
+    - name: "spot-nodes"
+      instance_types:
+        - "t3.medium"
+      capacity_type: "SPOT"
+      scaling:
+        min_size: 1
+        max_size: 5
+        desired_size: 2
+  
+  addons:
+    - name: "vpc-cni"
+      version: "latest"
+    - name: "kube-proxy"
+      version: "latest"
+    - name: "coredns"
+      version: "latest"
+```
+
+#### Post-Deployment Steps
+
+```bash
+# Update kubeconfig
+aws eks update-kubeconfig --region us-west-2 --name my-production-cluster
+
+# Verify cluster access
+kubectl get nodes
+
+# Deploy sample application
+kubectl apply -f examples/sample-app.yaml
+```
+
+</details>
+
+### 💻 EC2 Instance Management
+
+<details>
+<summary><b>📁 create_ec2_instances.py</b> - Compute Instance Automation</summary>
+
+#### Description
+Automates EC2 instance provisioning with security best practices and monitoring setup.
+
+#### Features
+- ✅ Auto-generates security groups
+- ✅ Configures CloudWatch monitoring
+- ✅ Sets up Systems Manager access
+- ✅ Implements tagging strategy
+
+#### Usage
+
+```bash
+# Launch a single instance
+python create_ec2_instances.py \
+  --instance-type t3.micro \
+  --ami-id ami-xxxxxx \
+  --key-name my-key-pair
+
+# Launch multiple instances with configuration
+python create_ec2_instances.py --config config/ec2_config.yaml
+
+# Launch with auto-scaling group
+python create_ec2_instances.py \
+  --auto-scaling \
+  --min-size 2 \
+  --max-size 10 \
+  --desired-capacity 4
+```
+
+#### Configuration Example
+
+```yaml
+# config/ec2_config.yaml
+instances:
+  web_servers:
+    count: 3
+    instance_type: "t3.medium"
+    ami_id: "ami-0c55b159cbfafe1f0"  # Amazon Linux 2
+    key_name: "my-key-pair"
+    
+    network:
+      vpc_id: "vpc-xxxxx"
+      subnet_id: "subnet-xxxxx"
+      assign_public_ip: true
+      
+    security_groups:
+      - name: "web-server-sg"
+        rules:
+          - protocol: "tcp"
+            port: 80
+            source: "0.0.0.0/0"
+          - protocol: "tcp"
+            port: 443
+            source: "0.0.0.0/0"
+          - protocol: "tcp"
+            port: 22
+            source: "10.0.0.0/8"
+    
+    storage:
+      - device_name: "/dev/sda1"
+        size: 30
+        type: "gp3"
+        encrypted: true
+      - device_name: "/dev/sdf"
+        size: 100
+        type: "gp3"
+        encrypted: true
+    
+    user_data: |
+      #!/bin/bash
+      yum update -y
+      yum install -y httpd
+      systemctl start httpd
+      systemctl enable httpd
+      echo "<h1>Hello from AWS EC2</h1>" > /var/www/html/index.html
+    
+    tags:
+      Name: "WebServer"
+      Environment: "Production"
+      ManagedBy: "Terraform"
+      CostCenter: "Engineering"
+  
+  database_servers:
+    count: 2
+    instance_type: "m5.large"
+    # ... additional configuration
+```
+
+</details>
+
+### 🔄 Utility Scripts
+
+<details>
+<summary><b>📁 utils/</b> - Helper Scripts and Utilities</summary>
+
+#### 📄 **cleanup.py** - Resource Cleanup
+```bash
+# Clean up all resources
+python utils/cleanup.py --all
+
+# Clean up specific resources
+python utils/cleanup.py --eks --ec2
+
+# Dry run mode
+python utils/cleanup.py --all --dry-run
+```
+
+#### 📄 **validate.py** - Configuration Validation
+```bash
+# Validate all configurations
+python utils/validate.py
+
+# Validate specific config
+python utils/validate.py --config config/eks_config.yaml
+```
+
+#### 📄 **monitor.py** - Resource Monitoring
+```bash
+# Monitor all resources
+python utils/monitor.py
+
+# Export monitoring data
+python utils/monitor.py --export --format json
+```
+
+</details>
+
 ---
 
-## Example State File Patterns
+## 🔐 Security Best Practices
 
-- `eks_clusters_created_YYYYMMDD_HHMMSS.json`
-- `ec2_instances_report_YYYYMMDD_HHMMSS.json`
+<div align="center">
+
+| 🛡️ **Security Measure** | 📝 **Description** | ✅ **Implementation** |
+|-------------------------|-------------------|----------------------|
+| **IAM Least Privilege** | Grant minimum required permissions | Automated policy generation |
+| **Encryption at Rest** | Encrypt all data volumes | Default EBS encryption |
+| **Network Isolation** | Private subnets for sensitive workloads | VPC configuration templates |
+| **Secrets Management** | Use AWS Secrets Manager | Integration scripts included |
+| **Audit Logging** | CloudTrail and VPC Flow Logs | Automatic enablement |
+
+</div>
+
+---
+
+## 🛠️ Troubleshooting
+
+<details>
+<summary><b>Common Issues and Solutions</b></summary>
+
+### 🔴 IAM Permission Errors
+```bash
+# Error: User is not authorized to perform: iam:CreateRole
+# Solution: Ensure your AWS user has the following policy attached:
+aws iam attach-user-policy --user-name YOUR_USER --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
+```
+
+### 🔴 EKS Cluster Creation Fails
+```bash
+# Error: Cannot create cluster, VPC not found
+# Solution: Ensure VPC exists or let the script create one:
+python create_eks_cluster.py --create-vpc
+```
+
+### 🔴 EC2 Key Pair Issues
+```bash
+# Error: Key pair 'my-key' does not exist
+# Solution: Create a new key pair:
+aws ec2 create-key-pair --key-name my-key --query 'KeyMaterial' --output text > my-key.pem
+chmod 400 my-key.pem
+```
+
+### 🔴 Kubectl Connection Issues
+```bash
+# Error: Unable to connect to the server
+# Solution: Update kubeconfig:
+aws eks update-kubeconfig --region REGION --name CLUSTER_NAME
+
+# Verify:
+kubectl cluster-info
+```
+
+</details>
 
 ---
 
-## Key Improvements Over Standard Tools
+## 🤝 Contributing
 
-- **Accurate EKS Control Plane Cost:** $0.65/hour (not $0.10!)  
-- **Actual Node Counts:** Live lookup shows precise node count per cluster.
-- **Readable Timestamps:** All times shown in IST, not raw timestamps.
-- **User-Friendly File Selection:** See, decide, and process only what you need.
-- **No Duplicate Numbering:** Resource selection numbers are unique across all files in a session.
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+
+### How to Contribute
+
+1. 🍴 Fork the repository
+2. 🌿 Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. 💻 Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. 📤 Push to the branch (`git push origin feature/AmazingFeature`)
+5. 🔄 Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## Troubleshooting
+<div align="center">
 
-- If you see `AttributeError: 'AWSResourceManager' object has no attribute 'ask_resource_type'`, make sure the method is present and correctly indented in your class.
-- Make sure your AWS credentials in the config file have sufficient permissions.
+### 🌟 **Star this repository if you find it helpful!**
 
----
+[![GitHub stars](https://img.shields.io/github/stars/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/network/members)
+[![GitHub watchers](https://img.shields.io/github/watchers/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social)](https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click/watchers)
+
+### 📧 **Contact**
+
+For questions and support, please open an issue in the GitHub repository.
 
 ## License
 
 MIT License
 
 ---
-
 ## Author
 
 - [varadharajaan](https://github.com/varadharajaan)
+
+</div>
+
+
+
