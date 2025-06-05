@@ -98,7 +98,7 @@ class EKSClusterDeleteManager:
         self.execution_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Define the 5 regions to scan
-        self.scan_regions = ['us-east-1', 'us-east-2', 'us-west-1', 'us-west-2', 'ap-south-1']
+        self.scan_regions = self.get_regions_from_config()
         
         self.discovered_clusters = {}  # account -> region -> clusters
         self.deletion_summary = []
@@ -656,9 +656,150 @@ class EKSClusterDeleteManager:
         except Exception as e:
             self.log_operation('ERROR', f"Failed to delete nodegroups: {str(e)}", thread_id)
             return False
+        
+    def delete_cluster_scrappers(self, cluster_info: Dict, thread_id: str) -> bool:
+        """Delete all scrappers associated with a cluster"""
+        try:
+            account_key = cluster_info['account_key']
+            region = cluster_info['region']
+            cluster = cluster_info['cluster']
+            cluster_name = cluster['name']
+            
+            self.log_operation('INFO', f"Deleting scrappers for cluster {cluster_name} in {account_key} - {region}", thread_id)
+            
+            # Get admin credentials
+            admin_access_key, admin_secret_key = self.get_admin_credentials_for_account(account_key)
+            
+            # Create AWS session
+            admin_session = boto3.Session(
+                aws_access_key_id=admin_access_key,
+                aws_secret_access_key=admin_secret_key,
+                region_name=region
+            )
+            
+            # Delete scrappers from different AWS services
+            deleted_scrappers = []
+            
+            # 1. Delete CloudWatch Scrappers
+            try:
+                cloudwatch_client = admin_session.client('cloudwatch')
+                
+                # List and delete custom metrics/alarms related to the cluster
+                paginator = cloudwatch_client.get_paginator('list_metrics')
+                for page in paginator.paginate():
+                    for metric in page['Metrics']:
+                        if cluster_name in str(metric.get('Dimensions', [])):
+                            try:
+                                # Delete related alarms
+                                alarms_response = cloudwatch_client.describe_alarms_for_metric(
+                                    MetricName=metric['MetricName'],
+                                    Namespace=metric['Namespace'],
+                                    Dimensions=metric.get('Dimensions', [])
+                                )
+                                
+                                for alarm in alarms_response.get('MetricAlarms', []):
+                                    cloudwatch_client.delete_alarms(AlarmNames=[alarm['AlarmName']])
+                                    deleted_scrappers.append(f"CloudWatch Alarm: {alarm['AlarmName']}")
+                                    self.log_operation('INFO', f"Deleted CloudWatch alarm: {alarm['AlarmName']}", thread_id)
+                            except Exception as e:
+                                self.log_operation('WARNING', f"Failed to delete CloudWatch alarm: {str(e)}", thread_id)
+                                
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to process CloudWatch scrappers: {str(e)}", thread_id)
+            
+            # 2. Delete Prometheus/Grafana related resources
+            try:
+                # Look for AMP (Amazon Managed Prometheus) workspaces
+                amp_client = admin_session.client('amp')
+                
+                workspaces_response = amp_client.list_workspaces()
+                for workspace in workspaces_response.get('workspaces', []):
+                    workspace_id = workspace['workspaceId']
+                    workspace_alias = workspace.get('alias', '')
+                    
+                    # Check if workspace is related to our cluster
+                    if cluster_name in workspace_alias or cluster_name in workspace.get('tags', {}).values():
+                        try:
+                            # List and delete scrape configurations
+                            scrape_configs = amp_client.list_scrapers(
+                                filters={'name': f'*{cluster_name}*'}
+                            )
+                            
+                            for scraper in scrape_configs.get('scrapers', []):
+                                amp_client.delete_scraper(scraperId=scraper['scraperId'])
+                                deleted_scrappers.append(f"AMP Scraper: {scraper['scraperId']}")
+                                self.log_operation('INFO', f"Deleted AMP scraper: {scraper['scraperId']}", thread_id)
+                                
+                        except Exception as e:
+                            self.log_operation('WARNING', f"Failed to delete AMP scrapers: {str(e)}", thread_id)
+                            
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to process AMP scrappers: {str(e)}", thread_id)
+            
+            # 3. Delete EKS-specific monitoring resources
+            try:
+                eks_client = admin_session.client('eks')
+                
+                # Check for EKS add-ons that might include monitoring
+                addons_response = eks_client.list_addons(clusterName=cluster_name)
+                monitoring_addons = ['aws-for-fluent-bit', 'adot', 'amazon-cloudwatch-observability']
+                
+                for addon_name in addons_response.get('addons', []):
+                    if any(monitoring in addon_name.lower() for monitoring in monitoring_addons):
+                        try:
+                            eks_client.delete_addon(
+                                clusterName=cluster_name,
+                                addonName=addon_name
+                            )
+                            deleted_scrappers.append(f"EKS Addon: {addon_name}")
+                            self.log_operation('INFO', f"Deleted EKS monitoring addon: {addon_name}", thread_id)
+                        except Exception as e:
+                            self.log_operation('WARNING', f"Failed to delete EKS addon {addon_name}: {str(e)}", thread_id)
+                            
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to process EKS monitoring addons: {str(e)}", thread_id)
+            
+            # 4. Delete EC2-based scrappers (instances with scrapper tags)
+            try:
+                ec2_client = admin_session.client('ec2')
+                
+                # Find EC2 instances tagged as scrappers for this cluster
+                response = ec2_client.describe_instances(
+                    Filters=[
+                        {'Name': 'tag:Purpose', 'Values': ['scrapper', 'monitoring', 'prometheus', 'grafana']},
+                        {'Name': 'tag:Cluster', 'Values': [cluster_name]},
+                        {'Name': 'instance-state-name', 'Values': ['running', 'stopped']}
+                    ]
+                )
+                
+                instance_ids = []
+                for reservation in response['Reservations']:
+                    for instance in reservation['Instances']:
+                        instance_ids.append(instance['InstanceId'])
+                
+                if instance_ids:
+                    ec2_client.terminate_instances(InstanceIds=instance_ids)
+                    deleted_scrappers.extend([f"EC2 Scrapper Instance: {iid}" for iid in instance_ids])
+                    self.log_operation('INFO', f"Terminated {len(instance_ids)} scrapper EC2 instances", thread_id)
+                    
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to delete EC2 scrapper instances: {str(e)}", thread_id)
+            
+            if deleted_scrappers:
+                self.log_operation('INFO', f"Successfully deleted {len(deleted_scrappers)} scrappers for cluster {cluster_name}", thread_id)
+                for scrapper in deleted_scrappers:
+                    self.log_operation('INFO', f"  - {scrapper}", thread_id)
+            else:
+                self.log_operation('INFO', f"No scrappers found for cluster {cluster_name}", thread_id)
+            
+            return True
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to delete scrappers: {str(e)}", thread_id)
+            return False
     
     def delete_single_cluster(self, cluster_info: Dict, thread_id: str = None) -> bool:
-        """Delete a single EKS cluster (nodegroups first, then cluster) - Thread-safe"""
+        """Delete a single EKS cluster (scrappers first, then nodegroups, then cluster) - Thread-safe"""
         if thread_id is None:
             thread_id = str(threading.current_thread().ident)
         
@@ -683,8 +824,18 @@ class EKSClusterDeleteManager:
             
             eks_client = admin_session.client('eks')
             
-            # Step 1: Delete all nodegroups first
-            self.printer.print_normal(f"   📦 Step 1: Deleting nodegroups...", thread_id)
+            # Step 1: Delete all scrappers first
+            self.printer.print_normal(f"   🔍 Step 1: Deleting scrappers...", thread_id)
+            scrappers_deleted = self.delete_cluster_scrappers(cluster_info, thread_id)
+            
+            if not scrappers_deleted:
+                self.log_operation('WARNING', f"Some scrappers may not have been deleted for cluster {cluster_name}", thread_id)
+                self.printer.print_colored(Colors.YELLOW, f"   ⚠️  Some scrappers may still exist (check logs)", thread_id)
+            else:
+                self.printer.print_normal(f"   ✅ All scrappers processed successfully", thread_id)
+            
+            # Step 2: Delete all nodegroups
+            self.printer.print_normal(f"   📦 Step 2: Deleting nodegroups...", thread_id)
             nodegroups_deleted = self.delete_cluster_nodegroups(cluster_info, thread_id)
             
             if not nodegroups_deleted:
@@ -694,15 +845,15 @@ class EKSClusterDeleteManager:
             
             self.printer.print_normal(f"   ✅ All nodegroups deleted successfully", thread_id)
             
-            # Step 2: Delete the EKS cluster
-            self.printer.print_normal(f"   🎯 Step 2: Deleting EKS cluster...", thread_id)
+            # Step 3: Delete the EKS cluster
+            self.printer.print_normal(f"   🎯 Step 3: Deleting EKS cluster...", thread_id)
             self.log_operation('INFO', f"Deleting EKS cluster {cluster_name}", thread_id)
             
             eks_client.delete_cluster(name=cluster_name)
             self.log_operation('INFO', f"EKS cluster {cluster_name} deletion initiated", thread_id)
             
-            # Step 3: Wait for cluster deletion
-            self.printer.print_normal(f"   ⏳ Step 3: Waiting for cluster deletion to complete...", thread_id)
+            # Step 4: Wait for cluster deletion
+            self.printer.print_normal(f"   ⏳ Step 4: Waiting for cluster deletion to complete...", thread_id)
             self.log_operation('INFO', f"Waiting for cluster {cluster_name} to be deleted...", thread_id)
             
             waiter = eks_client.get_waiter('cluster_deleted')
@@ -720,7 +871,35 @@ class EKSClusterDeleteManager:
             error_msg = str(e)
             self.log_operation('ERROR', f"Failed to delete cluster {cluster_name}: {error_msg}", thread_id)
             self.printer.print_colored(Colors.RED, f"   ❌ Failed to delete cluster {cluster_name}: {error_msg}", thread_id)
-            return False
+        return False
+    
+    def get_regions_from_config(self) -> List[str]:
+        """Extract regions from user_settings.user_regions in the config"""
+        if not self.admin_config_data:
+            return ['us-east-1','us-east-2','us-west-1','us-west-2','ap-south-1']  # Fallback
+        
+        # Try to get regions from user_settings.user_regions
+        user_settings = self.admin_config_data.get('user_settings', {})
+        user_regions = user_settings.get('user_regions', [])
+        
+        if user_regions and isinstance(user_regions, list):
+            region_list = sorted(user_regions)
+            logger.info(f"Extracted regions from config user_settings: {region_list}")
+            return region_list
+        
+        # Fallback: try to get from individual accounts
+        regions = set()
+        for account_key, account_data in self.admin_config_data.get('accounts', {}).items():
+            account_regions = account_data.get('regions', [])
+            if isinstance(account_regions, list):
+                regions.update(account_regions)
+            elif isinstance(account_regions, str):
+                regions.add(account_regions)
+        
+        region_list = sorted(list(regions)) if regions else ['us-east-1','us-east-2','us-west-1','us-west-2','ap-south-1']
+        logger.info(f"Extracted regions from accounts (fallback): {region_list}")
+        
+        return region_list
     
     def update_deletion_summary(self, deletion_record: Dict):
         """Thread-safe update of deletion summary"""

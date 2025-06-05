@@ -97,3 +97,6 @@ dmypy.json
 /ec2_report_*.json
 /aws_account_info_*.json
 /aws_accounts_config.json
+/eks_deletion_report_*
+/eks_deletion_log*
+/elb_cleanup_log*
