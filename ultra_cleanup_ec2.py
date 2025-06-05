@@ -696,7 +696,7 @@ class UltraEC2CleanupManager:
             self.log_operation('INFO', "🚨 STARTING ULTRA EC2 CLEANUP SESSION 🚨")
             
             print("🚨" * 30)
-            print("💥 ULTRA EC2 CLEANUP - NUCLEAR OPTION 💥")
+            print("💥 ULTRA EC2 CLEANUP - SIMPLIFIED 💥")
             print("🚨" * 30)
             print(f"📅 Execution Date/Time: {self.current_time} UTC")
             print(f"👤 Executed by: {self.current_user}")
@@ -705,49 +705,37 @@ class UltraEC2CleanupManager:
             # Display configuration
             self.display_configuration_summary()
             
-            # Multiple confirmation layers
-            print(f"\n⚠️" * 20 + " DANGER ZONE " + "⚠️" * 20)
-            print("🚨 THIS WILL DELETE:")
-            print("   💻 ALL EC2 instances in ALL accounts and regions")
-            print("   🛡️  ALL security groups (except default) in ALL accounts and regions")
-            print("   🗑️  ALL associated resources")
-            print("🚨 THIS ACTION CANNOT BE UNDONE!")
-            print("⚠️" * 50)
-            
-            # First confirmation
-            confirm1 = input(f"\n❓ Do you understand this will delete EVERYTHING? (yes/no): ").strip().lower()
-            self.log_operation('INFO', f"First confirmation: '{confirm1}'")
-            
-            if confirm1 != 'yes':
-                self.log_operation('INFO', "Ultra cleanup cancelled at first confirmation")
-                print("❌ Ultra cleanup cancelled")
-                return
-            
-            # Second confirmation
-            confirm2 = input(f"\n❓ Are you absolutely certain? Type 'NUCLEAR DELETE' to proceed: ").strip()
-            self.log_operation('INFO', f"Second confirmation: '{confirm2}'")
-            
-            if confirm2 != 'NUCLEAR DELETE':
-                self.log_operation('INFO', "Ultra cleanup cancelled at second confirmation")
-                print("❌ Ultra cleanup cancelled - confirmation not provided")
-                return
-            
-            # Third confirmation with account count
+            # Calculate totals for summary
             account_count = len(self.config_data['accounts'])
             region_count = len(self.user_regions)
             total_operations = account_count * region_count
             
-            confirm3 = input(f"\n❓ Final confirmation: Delete ALL resources in {account_count} accounts across {region_count} regions ({total_operations} operations)? Type 'DESTROY EVERYTHING': ").strip()
-            self.log_operation('INFO', f"Third confirmation: '{confirm3}'")
+            # Simplified confirmation process
+            print(f"\n⚠️  WARNING: This will delete ALL EC2 instances and security groups")
+            print(f"    across {account_count} accounts in {region_count} regions ({total_operations} operations)")
+            print(f"    This action CANNOT be undone!")
             
-            if confirm3 != 'DESTROY EVERYTHING':
-                self.log_operation('INFO', "Ultra cleanup cancelled at third confirmation")
-                print("❌ Ultra cleanup cancelled - final confirmation not provided")
+            # First confirmation - simple y/n
+            confirm1 = input(f"\nContinue with cleanup? (y/n): ").strip().lower()
+            self.log_operation('INFO', f"First confirmation: '{confirm1}'")
+            
+            if confirm1 not in ['y', 'yes']:
+                self.log_operation('INFO', "Ultra cleanup cancelled by user")
+                print("❌ Cleanup cancelled")
                 return
             
-            # Start the nuclear cleanup
-            print(f"\n💥 INITIATING NUCLEAR CLEANUP...")
-            self.log_operation('INFO', f"🚨 NUCLEAR CLEANUP INITIATED - {account_count} accounts, {region_count} regions")
+            # Second confirmation - final check
+            confirm2 = input(f"Are you sure? (y/n): ").strip().lower()
+            self.log_operation('INFO', f"Final confirmation: '{confirm2}'")
+            
+            if confirm2 not in ['y', 'yes']:
+                self.log_operation('INFO', "Ultra cleanup cancelled at final confirmation")
+                print("❌ Cleanup cancelled")
+                return
+            
+            # Start the cleanup
+            print(f"\n💥 STARTING CLEANUP...")
+            self.log_operation('INFO', f"🚨 CLEANUP INITIATED - {account_count} accounts, {region_count} regions")
             
             start_time = time.time()
             
@@ -758,7 +746,7 @@ class UltraEC2CleanupManager:
             total_time = int(end_time - start_time)
             
             # Display final results
-            print(f"\n💥" + "="*25 + " NUCLEAR CLEANUP COMPLETE " + "="*25)
+            print(f"\n💥" + "="*25 + " CLEANUP COMPLETE " + "="*25)
             print(f"⏱️  Total execution time: {total_time} seconds")
             print(f"✅ Successful operations: {successful_tasks}")
             print(f"❌ Failed operations: {failed_tasks}")
@@ -767,7 +755,7 @@ class UltraEC2CleanupManager:
             print(f"⏭️  Resources skipped: {len(self.cleanup_results['skipped_resources'])}")
             print(f"❌ Failed deletions: {len(self.cleanup_results['failed_deletions'])}")
             
-            self.log_operation('INFO', f"NUCLEAR CLEANUP COMPLETED")
+            self.log_operation('INFO', f"CLEANUP COMPLETED")
             self.log_operation('INFO', f"Execution time: {total_time} seconds")
             self.log_operation('INFO', f"Instances deleted: {len(self.cleanup_results['deleted_instances'])}")
             self.log_operation('INFO', f"Security groups deleted: {len(self.cleanup_results['deleted_security_groups'])}")
@@ -811,18 +799,18 @@ class UltraEC2CleanupManager:
                     print(f"   ... and {remaining} more failures (see detailed report)")
             
             # Save comprehensive report
-            print(f"\n📄 Saving nuclear cleanup report...")
+            print(f"\n📄 Saving cleanup report...")
             report_file = self.save_cleanup_report()
             if report_file:
-                print(f"✅ Nuclear cleanup report saved to: {report_file}")
+                print(f"✅ Cleanup report saved to: {report_file}")
             
             print(f"✅ Session log saved to: {self.log_filename}")
             
-            print(f"\n💥 NUCLEAR CLEANUP COMPLETE! 💥")
+            print(f"\n💥 CLEANUP COMPLETE! 💥")
             print("🚨" * 50)
             
         except Exception as e:
-            self.log_operation('ERROR', f"FATAL ERROR in ultra cleanup execution: {str(e)}")
+            self.log_operation('ERROR', f"FATAL ERROR in cleanup execution: {str(e)}")
             raise
 
 def main():
@@ -831,7 +819,7 @@ def main():
         manager = UltraEC2CleanupManager()
         manager.run()
     except KeyboardInterrupt:
-        print("\n\n❌ Ultra cleanup interrupted by user")
+        print("\n\n❌ Cleanup interrupted by user")
         sys.exit(1)
     except Exception as e:
         print(f"❌ Unexpected error: {e}")

@@ -105,3 +105,4 @@ dmypy.json
 /iam_deletion_report*
 /user_instructions_*
 /aws_resource_creation_*
+/ultra_ec2_cleanup_*
