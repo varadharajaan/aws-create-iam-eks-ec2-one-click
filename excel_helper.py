@@ -307,7 +307,7 @@ if __name__ == "__main__":
                             "email": "Yongli.Wang@bakerhughes.com"
                         },
                         "region": "us-east-1",
-                        "access_key_id": "AKIAZ2ZH33RQVNQCMPBY",
+                        "access_key_id": "AKIAZ2ZH33R*******Y",
                         "secret_access_key": "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",
                         "console_password": "DemoUser@123",
                         "console_url": "https://676004093025.signin.aws.amazon.com/console"
@@ -320,7 +320,7 @@ if __name__ == "__main__":
                             "email": "Ruslan.Khokhlov@bakerhughes.com"
                         },
                         "region": "us-east-2",
-                        "access_key_id": "AKIAZ2ZH33RQTT344OIL",
+                        "access_key_id": "AKIAZ2Z********44OIL",
                         "secret_access_key": "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",
                         "console_password": "DemoUser@123",
                         "console_url": "https://676004093025.signin.aws.amazon.com/console"
