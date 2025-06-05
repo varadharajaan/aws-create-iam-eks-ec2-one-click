@@ -1651,6 +1651,760 @@ pip install boto3 awscli pyyaml requests colorama
 # Use virtual environment (recommended)
 python -m venv aws-automation-env
 source aws-automation-env/bin/activate  # Linux/macOS
+# aws-automation-env\Scripts\activate   # Windows
+pip install -r requirements.txt
+
+# Install additional spot analysis dependencies
+pip install matplotlib pandas numpy  # For advanced price analysis (optional)
+```
+
+</details>
+
+---
+
+## 🚀 Quick Start
+
+<div align="center">
+
+### **🎯 Get Started in 3 Simple Steps with Spot Intelligence!**
+
+</div>
+
+<table>
+<tr>
+<td width="33%" align="center">
+
+### **1️⃣ Configure**
+```bash
+# Setup your config file
+cp config.example.json aws_accounts_config.json
+# Edit with your credentials
+```
+
+</td>
+<td width="33%" align="center">
+
+### **2️⃣ Choose Operation**
+```bash
+# Create with spot analysis
+python create_ec2_with_aws_configure.py
+
+# Or EKS with spot nodes
+python eks_create_cluster_updated.py
+```
+
+</td>
+<td width="33%" align="center">
+
+### **3️⃣ Monitor & Save**
+```bash
+# Watch intelligent recommendations
+# Enjoy up to 90% cost savings
+# Detailed logging included
+```
+
+</td>
+</tr>
+</table>
+
+### 🎬 **Common Use Cases with Spot Intelligence**
+
+```bash
+# 🏗️ CREATE OPERATIONS WITH SPOT ANALYSIS
+python create_iam_roles.py                     # Create IAM roles
+python create_ec2_with_aws_configure.py        # Create EC2 with spot analysis
+python eks_create_cluster_updated.py           # Create EKS with spot nodes
+
+# 🔍 SPOT ANALYSIS OPERATIONS
+python create_ec2_with_aws_configure.py --spot-analysis    # Deep spot analysis
+python ec2_eks_lookup_resource.py --cost-analysis          # Live cost tracking
+
+# 🗑️ CLEANUP OPERATIONS  
+python eks_delete_cleanup_threaded.py         # Delete EKS clusters (with scrappers)
+python elb_cleanup_multi_account.py           # Clean up all ELBs
+
+# 🔧 UTILITY OPERATIONS
+python utils/validate.py                      # Validate configurations
+python utils/monitor.py                       # Monitor resources
+python utils/cleanup.py --dry-run             # Preview cleanup operations
+```
+
+---
+
+## 📖 Detailed Usage Guide
+
+### 🎯 Spot Instance Features
+
+<details>
+<summary><b>📁 create_ec2_with_aws_configure.py</b> - Enhanced EC2 Creation with Spot Analysis</summary>
+
+#### 🎯 **Purpose**
+Enhanced EC2 instance creation with intelligent Spot instance analysis for optimal cost savings while maintaining reliability.
+
+#### ✨ **Enhanced Features**
+- ✅ **Intelligent Spot Analysis** - Real-time price and capacity analysis
+- ✅ **Mixed Strategy Support** - Spot where safe, On-Demand elsewhere
+- ✅ **Automatic Fallback** - Falls back to On-Demand if Spot fails
+- ✅ **Price Volatility Assessment** - Analyzes 7-day price history
+- ✅ **Multi-AZ Capacity Check** - Ensures availability across zones
+- ✅ **Cost Savings Calculator** - Shows exact savings potential
+- ✅ **Risk Assessment** - Confidence scoring for recommendations
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Basic EC2 creation with spot analysis
+python create_ec2_with_aws_configure.py
+
+# The script will guide you through:
+# 1. Account selection
+# 2. User selection (or all users)
+# 3. Instance type selection
+# 4. Spot analysis (recommended)
+# 5. Strategy confirmation
+# 6. Instance creation with monitoring
+```
+
+#### 🔍 **Spot Analysis Workflow**
+
+```
+🔍 Spot Instance Analysis
+═══════════════════════════════════════════════════════════════
+Would you like to analyze Spot instance availability and pricing?
+
+📊 Spot Analysis Benefits:
+   • Checks current Spot prices vs On-Demand pricing
+   • Analyzes interruption frequency in each region
+   • Provides intelligent recommendations per region
+   • Supports mixed strategy (Spot where safe, On-Demand elsewhere)
+
+📋 Options:
+   1. Yes - Perform Spot analysis and get recommendations
+   2. No - I'll choose capacity type manually
+═══════════════════════════════════════════════════════════════
+```
+
+#### 📊 **Analysis Output Example**
+
+```
+🔍 Analyzing Spot Instance Availability
+================================================================================
+Instance Type: t3.medium
+Regions to analyze: us-east-1, us-west-2
+────────────────────────────────────────────────────────────────────────────────
+
+🌍 Analyzing us-east-1...
+   📊 Analysis Results:
+      ✅ Price stable (volatility: 8.3%)
+      ✅ Capacity available in 3 AZs
+      ✅ Excellent savings: 72.4%
+      🎯 Recommendation: USE SPOT (confidence: 85/100)
+   
+   💰 Pricing Comparison:
+      On-Demand: $0.0416/hour
+      Spot:      $0.0115/hour
+      Savings:   72.4% ($0.0301/hour)
+
+🌍 Analyzing us-west-2...
+   📊 Analysis Results:
+      ⚠️ Price volatile (volatility: 28.7%)
+      ✅ Capacity available in 2 AZs
+      ✅ Good savings: 58.1%
+      ⚠️ Recommendation: SPOT WITH CAUTION (confidence: 45/100)
+
+🎯 Spot Instance Recommendation Summary:
+════════════════════════════════════════════════════════════════
+Overall recommendation: MIXED
+────────────────────────────────────────────────────────────────
+
+📋 Instance Creation Options:
+  1. Use Spot instances (where recommended)
+  2. Use On-Demand instances (safer, more expensive)
+  3. Mixed approach (Spot where safe, On-Demand elsewhere)
+  4. Show detailed analysis again
+  5. Cancel
+```
+
+#### 🎛️ **Configuration Parameters**
+
+```python
+# Spot analysis configuration
+SPOT_ANALYSIS_CONFIG = {
+    'price_history_days': 7,        # Days of price history to analyze
+    'volatility_threshold': 15,     # % threshold for price stability
+    'min_availability_zones': 2,    # Minimum AZs required for spot
+    'confidence_thresholds': {
+        'high': 60,      # Use spot (high confidence)
+        'medium': 35,    # Use spot with caution
+        'low': 0         # Use on-demand (low confidence)
+    },
+    'max_spot_price': None,         # Optional price ceiling
+    'interruption_behavior': 'terminate'  # or 'stop'
+}
+```
+
+#### 📈 **Spot Price Analysis Methods**
+
+```python
+# Key analysis functions used in the script
+
+def get_spot_price_history(ec2_client, instance_type, region, days=7):
+    """Get 7-day spot price history for analysis"""
+    
+def analyze_spot_price_stability(prices):
+    """Calculate volatility and price trends"""
+    
+def check_spot_capacity_availability(ec2_client, instance_type, region):
+    """Check capacity across availability zones"""
+    
+def should_use_spot_instance(ec2_client, instance_type, region):
+    """Main recommendation engine with confidence scoring"""
+```
+
+#### 💡 **Smart Recommendations**
+
+The script provides intelligent recommendations based on:
+
+1. **Price Stability** (40% weight)
+   - Volatility < 15% = Stable (30 points)
+   - Volatility 15-30% = Moderate (15 points)
+   - Volatility > 30% = Volatile (0 points)
+
+2. **Capacity Availability** (30% weight)
+   - 3+ AZs available = Excellent (25 points)
+   - 2 AZs available = Good (15 points)
+   - 1 AZ available = Poor (5 points)
+
+3. **Cost Savings** (30% weight)
+   - >50% savings = Excellent (25 points)
+   - 30-50% savings = Good (15 points)
+   - <30% savings = Limited (5 points)
+
+**Final Score:**
+- 60+ points = Use Spot (High confidence)
+- 35-59 points = Spot with caution
+- <35 points = Use On-Demand
+
+</details>
+
+<details>
+<summary><b>📁 eks_create_cluster_updated.py</b> - EKS with Spot Node Groups</summary>
+
+#### 🎯 **Purpose**
+Create production-ready EKS clusters with intelligent Spot/On-Demand node group strategies for optimal cost and performance.
+
+#### ✨ **Enhanced Features**
+- ✅ **Mixed Capacity Node Groups** - Combines Spot and On-Demand instances
+- ✅ **Intelligent Capacity Selection** - Per-region spot analysis
+- ✅ **Auto-scaling Optimization** - Smart scaling policies for mixed groups
+- ✅ **Spot Interruption Handling** - Graceful node replacement
+- ✅ **Cost-Optimized Strategies** - Up to 70% savings on node costs
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Create EKS cluster with spot analysis
+python eks_create_cluster_updated.py
+
+# Follow the interactive prompts:
+# 1. Select cluster configuration
+# 2. Choose capacity type strategy
+# 3. Review spot analysis recommendations
+# 4. Confirm and create cluster
+```
+
+#### 💰 **Node Group Capacity Strategies**
+
+```
+💰 Capacity Type Selection
+════════════════════════════════════════════════════════════════
+Available capacity types:
+
+  1. Spot (default) - Lower cost, may be interrupted
+  2. On-Demand - Higher cost, stable
+
+Capacity Type Selection Results:
+✅ Selected capacity type: spot
+
+💰 Estimated Cost (per hour):
+   On-Demand: $0.0864
+   Spot: $0.0259
+   Savings: $0.0605 (70%)
+   Monthly (730 hrs): $18.91 vs $63.07 (savings: $44.16)
+```
+
+#### 🔧 **Mixed Node Group Configuration**
+
+```yaml
+# Example node group with mixed capacity
+nodeGroups:
+  - name: mixed-workers
+    minSize: 2
+    maxSize: 10
+    desiredCapacity: 4
+    instancesDistribution:
+      maxPrice: 0.10
+      instanceTypes: 
+        - t3.medium
+        - t3.large
+        - m5.large
+      onDemandBaseCapacity: 1      # Always have 1 on-demand
+      onDemandPercentageAboveBaseCapacity: 25  # 25% on-demand above base
+      spotInstancePools: 3         # Diversify across 3 pools
+    capacityType: MIXED
+```
+
+#### 📊 **Spot Node Monitoring**
+
+```bash
+# Monitor spot node interruptions and replacements
+kubectl get nodes --show-labels | grep spot
+kubectl describe node <node-name> | grep "spot"
+
+# Check node group scaling activities
+aws eks describe-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name>
+```
+
+</details>
+
+<details>
+<summary><b>📁 ec2_eks_lookup_resource.py</b> - Cost Analysis and Monitoring</summary>
+
+#### 🎯 **Purpose**
+Comprehensive resource monitoring with live cost analysis, including spot instance tracking and savings reporting.
+
+#### ✨ **Features**
+- ✅ **Live Cost Calculation** - Real-time cost analysis
+- ✅ **Spot vs On-Demand Comparison** - Actual savings tracking
+- ✅ **Multi-Account Resource Discovery** - Cross-account visibility
+- ✅ **Performance Metrics** - Instance utilization and efficiency
+- ✅ **Cost Optimization Recommendations** - Actionable insights
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Run comprehensive resource analysis
+python ec2_eks_lookup_resource.py
+
+# Select analysis type:
+# 1. EC2 instances with cost analysis
+# 2. EKS clusters with node cost breakdown
+# 3. Combined infrastructure overview
+```
+
+#### 📊 **Cost Analysis Output**
+
+```
+💰 LIVE COST CALCULATION FOR 5 EC2 RESOURCE(S)
+⏰ Calculation time (IST): 2025-06-05 20:13:55
+================================================================================
+
+🏢 ACCOUNT: production-account
+════════════════════════════════════════════════════════════════
+
+🔍 Analyzing EC2 Instance: i-1234567890abcdef0
+📊 Live Instance Data:
+   Instance Type: t3.medium
+   State: running
+   Launch Time: 2025-06-05 15:30:00
+   Uptime: 4.73 hours
+   Capacity Type: spot
+
+💰 Cost Breakdown:
+   Hourly Rate: $0.0125 (spot) vs $0.0416 (on-demand)
+   Runtime Cost: $0.0591
+   If On-Demand: $0.1968
+   Savings: $0.1377 (70.0%)
+   Monthly Projection: $9.13 vs $30.37 (saves $21.24)
+
+📈 Performance Metrics:
+   CPU Utilization: 45%
+   Memory Usage: 62%
+   Network I/O: Normal
+   Cost Efficiency: Excellent
+```
+
+#### 🎯 **Spot Savings Summary**
+
+```
+💰 TOTAL COST SUMMARY
+================================================================================
+📊 Grand Total Across All Accounts:
+
+Account Summary:
+💼 production-account: $2.45/day (5 instances)
+   • Spot instances: 4 ($1.23/day)
+   • On-demand instances: 1 ($1.22/day)
+   • Potential savings if all spot: $3.67/day
+
+💼 development-account: $0.89/day (2 instances)
+   • All spot instances
+   • Savings vs on-demand: $2.11/day
+
+🎯 OVERALL TOTALS:
+   Current daily cost: $3.34
+   On-demand equivalent: $9.12
+   Daily savings: $5.78 (63.4%)
+   Monthly savings projection: $173.40
+   Annual savings projection: $2,109.70
+```
+
+</details>
+
+### 🔐 IAM Management
+
+<details>
+<summary><b>📁 create_iam_roles.py</b> - Comprehensive IAM Role Automation</summary>
+
+#### 🎯 **Purpose**
+Automates the creation and configuration of IAM roles required for EKS clusters, EC2 instances, and cross-account access with security best practices.
+
+#### ✨ **Features**
+- ✅ **EKS Service Roles** - Complete cluster role setup
+- ✅ **Node Instance Profiles** - Worker node permissions
+- ✅ **Trust Relationships** - Secure service-to-service access
+- ✅ **Policy Management** - Automatic policy attachment
+- ✅ **Security Validation** - Compliance checking
+- ✅ **Cross-Account Support** - Multi-account role creation
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Basic IAM role creation
+python create_iam_roles.py
+
+# With custom configuration
+python create_iam_roles.py --config config/iam_config.yaml
+
+# Dry run mode (preview changes without executing)
+python create_iam_roles.py --dry-run
+
+# Verbose logging
+python create_iam_roles.py --verbose
+
+# Create roles for specific accounts
+python create_iam_roles.py --accounts account01,account02
+```
+
+#### 📋 **Configuration Example**
+
+```yaml
+# config/iam_config.yaml
+roles:
+  eks_cluster_role:
+    name: "EKSClusterServiceRole"
+    description: "Role for EKS cluster operations"
+    trust_policy: "eks.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+    tags:
+      Environment: "Production"
+      ManagedBy: "AutomationSuite"
+  
+  node_instance_role:
+    name: "EKSNodeInstanceRole"
+    description: "Role for EKS worker nodes"
+    trust_policy: "ec2.amazonaws.com"
+    policies:
+      - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+      - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+      - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    instance_profile: true
+    tags:
+      Environment: "Production"
+      NodeType: "Worker"
+
+security_settings:
+  enforce_mfa: true
+  session_duration: 3600
+  external_id_required: false
+```
+
+#### 📊 **Output & Reporting**
+- **Real-time Progress**: Live updates during role creation
+- **Detailed Logs**: Complete audit trail in `iam_creation_log_YYYYMMDD_HHMMSS.log`
+- **Summary Report**: Final report with created roles and any errors
+- **JSON Export**: Machine-readable output for automation pipelines
+
+</details>
+
+### ☸️ EKS Cluster Operations
+
+<details>
+<summary><b>📁 eks_delete_cleanup_threaded.py</b> - Safe EKS Cluster Deletion with Scrapper Cleanup</summary>
+
+#### 🎯 **Purpose**
+Safely deletes EKS clusters with comprehensive cleanup of associated resources including scrappers, monitoring tools, and dependencies using parallel processing.
+
+#### ✨ **Features**
+- ✅ **Scrapper Cleanup** - Removes monitoring tools before cluster deletion
+- ✅ **Parallel Processing** - Up to 3 simultaneous cluster deletions
+- ✅ **Safety Confirmations** - Multiple confirmation steps
+- ✅ **Thread-Safe Operations** - Concurrent execution without conflicts
+- ✅ **Comprehensive Logging** - Detailed audit trails
+- ✅ **Error Recovery** - Handles partial failures gracefully
+
+#### 🔧 **Scrapper Types Detected & Removed**
+- **CloudWatch Alarms** - Custom metrics and alarms
+- **AMP Workspaces** - Amazon Managed Prometheus
+- **EKS Add-ons** - Monitoring add-ons (fluent-bit, ADOT, CloudWatch)
+- **EC2 Instances** - Tagged scrapper instances
+- **Kubernetes Deployments** - Prometheus, Grafana, Jaeger, etc.
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Interactive cluster deletion with scrapper cleanup
+python eks_delete_cleanup_threaded.py
+
+# The script will:
+# 1. Scan all accounts and regions
+# 2. Display found clusters
+# 3. Allow selection of clusters to delete
+# 4. Show confirmation with details
+# 5. Delete scrappers first, then nodegroups, then clusters
+```
+
+#### 📊 **Deletion Process Flow**
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Script
+    participant AWS
+    
+    User->>Script: Run deletion script
+    Script->>AWS: Scan accounts & regions
+    AWS-->>Script: Return cluster list
+    Script->>User: Display clusters
+    User->>Script: Select clusters to delete
+    Script->>User: Show confirmation
+    User->>Script: Confirm deletion
+    
+    loop For each cluster (parallel)
+        Script->>AWS: Delete scrappers
+        Script->>AWS: Delete nodegroups
+        Script->>AWS: Delete cluster
+        AWS-->>Script: Confirm deletion
+    end
+    
+    Script->>User: Show final report
+```
+
+</details>
+
+### 💻 EC2 Instance Management
+
+<details>
+<summary><b>📁 create_ec2_instances.py</b> - Comprehensive EC2 Automation</summary>
+
+#### 🎯 **Purpose**
+Automates EC2 instance provisioning with security best practices, monitoring setup, and comprehensive configuration management.
+
+#### ✨ **Features**
+- ✅ **Auto-generated Security Groups** - Best practice firewall rules
+- ✅ **CloudWatch Monitoring** - Detailed metrics and alarms
+- ✅ **Systems Manager Integration** - Remote management capabilities
+- ✅ **EBS Encryption** - Data protection at rest
+- ✅ **Auto-scaling Groups** - Dynamic capacity management
+- ✅ **Multi-AZ Deployment** - High availability setup
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Launch a single instance
+python create_ec2_instances.py \
+  --instance-type t3.micro \
+  --ami-id ami-0c55b159cbfafe1f0 \
+  --key-name my-key-pair \
+  --subnet-id subnet-12345678
+
+# Launch multiple instances with auto-scaling
+python create_ec2_instances.py \
+  --auto-scaling \
+  --min-size 2 \
+  --max-size 10 \
+  --desired-capacity 4 \
+  --instance-type t3.medium
+
+# Use comprehensive configuration file
+python create_ec2_instances.py --config config/ec2_production.yaml
+
+# Launch instances across multiple accounts
+python create_ec2_instances.py \
+  --config config/multi_account_ec2.yaml \
+  --accounts account01,account02
+```
+
+</details>
+
+### ⚖️ ELB Cleanup Operations
+
+<details>
+<summary><b>📁 elb_cleanup_multi_account.py</b> - Comprehensive Load Balancer Cleanup</summary>
+
+#### 🎯 **Purpose**
+Performs comprehensive cleanup of all types of Elastic Load Balancers (Classic, ALB, NLB) across multiple AWS accounts and regions with parallel processing.
+
+#### ✨ **Features**
+- ✅ **All ELB Types** - Classic, Application, and Network Load Balancers
+- ✅ **Target Group Cleanup** - Removes associated target groups
+- ✅ **Parallel Processing** - Up to 5 simultaneous deletions
+- ✅ **Multi-Account Support** - Operates across multiple AWS accounts
+- ✅ **Region-Aware** - Uses regions from configuration file
+- ✅ **Safety Confirmations** - Multiple confirmation steps
+
+#### 🔧 **ELB Types Supported**
+- **Classic Load Balancers (ELB)** - Legacy load balancers
+- **Application Load Balancers (ALB)** - Layer 7 load balancing
+- **Network Load Balancers (NLB)** - Layer 4 load balancing
+- **Target Groups** - Associated target group cleanup
+
+#### 🚀 **Usage Examples**
+
+```bash
+# Interactive ELB cleanup across all accounts
+python elb_cleanup_multi_account.py
+
+# The script will:
+# 1. Read regions from aws_accounts_config.json
+# 2. Scan all accounts across all configured regions
+# 3. Display found ELBs with details
+# 4. Allow selection of ELBs to delete
+# 5. Show confirmation with ELB details
+# 6. Delete target groups first, then load balancers
+```
+
+#### 📊 **Cleanup Process Flow**
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Script
+    participant Config
+    participant AWS
+    
+    User->>Script: Run cleanup script
+    Script->>Config: Read aws_accounts_config.json
+    Config-->>Script: Return accounts & regions
+    Script->>AWS: Scan accounts & regions for ELBs
+    AWS-->>Script: Return ELB inventory
+    Script->>User: Display ELBs by type
+    User->>Script: Select ELBs to delete
+    Script->>User: Show deletion confirmation
+    User->>Script: Confirm deletion
+    
+    loop For each ELB (parallel)
+        alt ALB/NLB
+            Script->>AWS: Delete target groups
+            Script->>AWS: Delete load balancer
+        else Classic ELB
+            Script->>AWS: Delete load balancer
+        end
+        AWS-->>Script: Confirm deletion
+    end
+    
+    Script->>User: Show final report
+```
+
+#### 📊 **Generated Reports**
+
+The script generates detailed reports including:
+- **Execution Summary** - Overall statistics and timing
+- **Successful Deletions** - Complete list with timing details
+- **Failed Deletions** - Errors and troubleshooting information
+- **Thread Utilization** - Parallel processing efficiency
+- **Performance Metrics** - Speed and resource usage
+
+</details>
+
+---
+
+## 🔐 Security Best Practices
+
+<div align="center">
+
+### 🛡️ **Comprehensive Security Framework with Spot Intelligence**
+
+</div>
+
+<table>
+<tr>
+<td width="25%" align="center">
+
+### 🔑 **Access Control**
+- **IAM Least Privilege**
+- **MFA Enforcement**
+- **Role-Based Access**
+- **Service Accounts**
+- **Spot Instance Permissions**
+
+</td>
+<td width="25%" align="center">
+
+### 🔒 **Data Protection**
+- **Encryption at Rest**
+- **Encryption in Transit**
+- **Key Management**
+- **Secrets Management**
+- **Spot Data Handling**
+
+</td>
+<td width="25%" align="center">
+
+### 🌐 **Network Security**
+- **VPC Isolation**
+- **Security Groups**
+- **NACLs**
+- **Private Subnets**
+- **Spot Instance Placement**
+
+</td>
+<td width="25%" align="center">
+
+### 📊 **Monitoring**
+- **CloudTrail Logging**
+- **VPC Flow Logs**
+- **Real-time Alerts**
+- **Compliance Reports**
+- **Spot Interruption Alerts**
+
+</td>
+</tr>
+</table>
+
+### 🛡️ **Security Checklist**
+
+- ✅ **Credentials Management**
+  - [ ] AWS credentials stored securely (not in code)
+  - [ ] IAM roles used instead of long-term access keys
+  - [ ] MFA enabled for privileged accounts
+  - [ ] Regular credential rotation implemented
+
+- ✅ **Network Security**
+  - [ ] Resources deployed in private subnets when possible
+  - [ ] Security groups follow least privilege principle
+  - [ ] VPC Flow Logs enabled
+  - [ ] WAF deployed for public-facing applications
+
+- ✅ **Data Protection**
+  - [ ] EBS volumes encrypted at rest
+  - [ ] S3 buckets have encryption enabled
+  - [ ] Database encryption enabled
+  - [ ] TLS/SSL used for data in transit
+
+- ✅ **Spot Instance Security**
+  - [ ] Spot instances handle interruptions gracefully
+  - [ ] Sensitive data not stored on spot instances
+  - [ ] Proper backup strategies for spot workloads
+  - [ ] Monitoring for spot interruption notifications
+
+- ✅ **Monitoring & Compliance**
+  - [ ] CloudTrail enabled across all regions
+  - [ ] AWS Config rules configured
+  - [ ] CloudWatch alarms set for security events
+  - [ ] Regular security assessments performed
 
 ---
 
@@ -1674,6 +2428,26 @@ aws iam attach-user-policy \
 aws iam create-policy \
   --policy-name EKS-Automation-Policy \
   --policy-document file://policies/eks-automation-policy.json
+```
+
+### 🔧 **Spot Instance Issues**
+
+**Error**: `SpotMaxPriceTooLow` or `InsufficientSpotCapacity`
+
+**Solution**:
+```bash
+# Check current spot prices in your region
+aws ec2 describe-spot-price-history \
+  --instance-types t3.medium \
+  --product-descriptions "Linux/UNIX" \
+  --max-items 5
+
+# Increase max price or try different instance types
+# Use the spot analysis feature to get recommendations
+python create_ec2_with_aws_configure.py --spot-analysis
+
+# Consider mixed capacity strategies
+# Set up automatic fallback to on-demand instances
 ```
 
 ### 🔧 **EKS Cluster Creation Failures**
@@ -1734,6 +2508,28 @@ source aws-automation-env/bin/activate  # Linux/macOS
 pip install -r requirements.txt
 ```
 
+### 🔧 **Spot Analysis Issues**
+
+**Error**: `Failed to retrieve spot pricing data`
+
+**Solution**:
+```bash
+# Ensure you have pricing API permissions
+aws iam attach-user-policy \
+  --user-name YOUR_USER \
+  --policy-arn arn:aws:iam::aws:policy/AWSPriceListServiceFullAccess
+
+# Check if the instance type is available in the region
+aws ec2 describe-instance-types --instance-types t3.medium
+
+# Verify region supports spot instances
+aws ec2 describe-spot-price-history --instance-types t3.medium --max-items 1
+
+# Use manual capacity selection if analysis fails
+python create_ec2_with_aws_configure.py
+# Choose option 2: "No - I'll choose capacity type manually"
+```
+
 </details>
 
 ---
@@ -1768,9 +2564,8 @@ git clone https://github.com/YOUR_USERNAME/aws-create-iam-eks-ec2-one-click.git
 ```bash
 # Create feature branch
 git checkout -b feature/amazing-feature
-
 # Or bug fix branch
-git checkout -b bugfix/fix-issue-123
+git checkout -b fix/important-bug
 ```
 
 </td>
@@ -1781,7 +2576,7 @@ git checkout -b bugfix/fix-issue-123
 # Make your changes
 # Test thoroughly
 # Add documentation
-# Update CHANGELOG.md
+# Update README if needed
 ```
 
 </td>
@@ -1789,90 +2584,89 @@ git checkout -b bugfix/fix-issue-123
 
 ### **4️⃣ Submit PR**
 ```bash
-# Commit changes
-git commit -m 'Add amazing feature'
-
-# Push to branch
+# Commit and push
+git commit -m "Add amazing feature"
 git push origin feature/amazing-feature
-
-# Open Pull Request
+# Create Pull Request
 ```
 
 </td>
 </tr>
 </table>
 
-### 🎯 **Contribution Guidelines**
+### 🎯 **Contribution Areas**
 
-<details>
-<summary><b>📋 Development Standards</b></summary>
+- **🔧 Code Improvements** - Bug fixes, performance optimizations
+- **📊 Spot Analysis** - Enhanced pricing algorithms, new analysis methods
+- **📖 Documentation** - Better guides, examples, troubleshooting
+- **🧪 Testing** - Unit tests, integration tests, edge cases
+- **🎨 UI/UX** - Better console output, interactive menus
+- **🌍 Localization** - Multi-language support
 
-#### **Code Quality**
-- ✅ Follow PEP 8 style guidelines
-- ✅ Include comprehensive docstrings
-- ✅ Add type hints where appropriate
-- ✅ Write unit tests for new features
-- ✅ Ensure backward compatibility
+### 📋 **Development Guidelines**
 
-#### **Documentation**
-- ✅ Update README.md for new features
-- ✅ Add inline comments for complex logic
-- ✅ Update configuration examples
-- ✅ Include usage examples
+```bash
+# Setup development environment
+git clone https://github.com/varadharajaan/aws-create-iam-eks-ec2-one-click.git
+cd aws-create-iam-eks-ec2-one-click
+git checkout varad/enchance-spot
 
-#### **Testing**
-- ✅ Test across multiple Python versions (3.8+)
-- ✅ Test with different AWS regions
-- ✅ Include both positive and negative test cases
-- ✅ Test error handling and edge cases
+# Create virtual environment
+python -m venv dev-env
+source dev-env/bin/activate  # Linux/macOS
+# dev-env\Scripts\activate   # Windows
 
-#### **Security**
-- ✅ Never commit sensitive data (keys, passwords)
-- ✅ Use IAM roles instead of long-term credentials
-- ✅ Follow AWS security best practices
-- ✅ Validate all user inputs
+# Install development dependencies
+pip install -r requirements-dev.txt
 
-</details>
+# Run tests
+python -m pytest tests/
 
-### 🏆 **Types of Contributions**
+# Check code style
+flake8 .
+black .
 
-- 🐛 **Bug Reports** - Help us identify and fix issues
-- 💡 **Feature Requests** - Suggest new functionality
-- 📝 **Documentation** - Improve guides and examples
-- 🧪 **Testing** - Add test cases and improve coverage
-- 🔧 **Code** - Implement new features or fix bugs
-- 🎨 **UI/UX** - Improve user experience and interfaces
+# Test spot analysis functionality
+python create_ec2_with_aws_configure.py --dry-run
+```
 
-### 📞 **Getting Help**
+### 🔍 **Code Review Process**
 
-- 💬 **Discussions** - Join our community discussions for questions and ideas
-- 📧 **Email Support** - Contact us at [varathu09@gmail.com](mailto:varathu09@gmail.com)
-- 🐛 **Issues** - Report bugs or request features via GitHub Issues
-- 📖 **Documentation** - Check our comprehensive guides and examples
-- 🤝 **Community** - Connect with other users and contributors
-- 💡 **Stack Overflow** - Tag your questions with `aws-automation-suite`
+1. **Automated Checks** - Code style, tests, security scans
+2. **Peer Review** - At least one maintainer approval required
+3. **Testing** - Manual testing of new features
+4. **Documentation** - Ensure changes are documented
+5. **Merge** - Squash and merge to main branch
 
 ---
 
 ## 📄 License
 
-<div align="center">
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
-### 📜 **MIT License**
+```
+MIT License
 
-*This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.*
+Copyright (c) 2025 Varadharajan Damotharan
 
-**You are free to:**
-- ✅ Use commercially
-- ✅ Modify and distribute
-- ✅ Use privately
-- ✅ Sublicense
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-**Conditions:**
-- 📋 Include license and copyright notice
-- 📋 No warranty provided
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-</div>
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ---
 
@@ -1880,50 +2674,47 @@ git push origin feature/amazing-feature
 
 <div align="center">
 
-### **🚀 Varadharajaan**
+### **Varadharajan Damotharan (@varadharajaan)**
 
-<img src="https://img.shields.io/badge/AWS-Solutions%20Architect-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white" />
-<img src="https://img.shields.io/badge/Cloud-Infrastructure%20Expert-0078D4?style=for-the-badge&logo=microsoft-azure&logoColor=white" />
-<img src="https://img.shields.io/badge/DevOps-Automation%20Specialist-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white" />
+*Senior DevOps Engineer & Cloud Architect*
 
-**📧 Email**: [varathu09@gmail.com](mailto:varathu09@gmail.com)  
-**🐙 GitHub**: [@varadharajaan](https://github.com/varadharajaan)  
-**💼 LinkedIn**: [Connect with me](https://linkedin.com/in/varadharajaan)  
-**🌐 Website**: [Portfolio](https://varadharajaan.dev)  
+[![GitHub](https://img.shields.io/badge/GitHub-varadharajaan-181717?style=for-the-badge&logo=github)](https://github.com/varadharajaan)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0077B5?style=for-the-badge&logo=linkedin)](https://linkedin.com/in/varadharajaan)
+[![Email](https://img.shields.io/badge/Email-Contact-D14836?style=for-the-badge&logo=gmail)](mailto:varathu09@gmail.com)
 
----
+</div>
 
-### **💭 About the Creator**
+### 🎯 **About the Author**
 
-*Passionate Cloud Infrastructure Engineer with expertise in AWS, Kubernetes, and automation. Dedicated to building tools that simplify complex infrastructure operations while maintaining security and reliability standards.*
+Passionate about cloud infrastructure automation, cost optimization, and helping teams achieve operational excellence through intelligent automation. Creator of this AWS automation suite with a focus on:
 
-**🎯 Specializations:**
-- ☁️ **AWS Architecture** - Designing scalable cloud solutions
-- ⚙️ **Infrastructure as Code** - Terraform, CloudFormation, CDK
-- 🐳 **Container Orchestration** - Kubernetes, EKS, Docker
-- 🔄 **CI/CD Pipelines** - Jenkins, GitHub Actions, GitLab CI
-- 🛡️ **Security & Compliance** - IAM, Security Groups, Compliance frameworks
-- 📊 **Monitoring & Observability** - CloudWatch, Prometheus, Grafana
+- **🏗️ Infrastructure as Code** - Terraform, CloudFormation, CDK
+- **☁️ Multi-Cloud Expertise** - AWS, Azure, GCP
+- **🔧 DevOps Practices** - CI/CD, GitOps, Monitoring
+- **💰 Cost Optimization** - Spot instances, right-sizing, resource management
+- **🔐 Security** - Zero-trust, compliance, audit automation
 
-**🏆 Achievements:**
-- 🎖️ AWS Solutions Architect Professional
-- 🎖️ Certified Kubernetes Administrator (CKA)
-- 🎖️ AWS DevOps Engineer Professional
-- 📈 10+ years in cloud infrastructure
-- 🚀 50+ successful cloud migrations
-- 👥 Led teams of 15+ engineers
+### 🌟 **Connect & Collaborate**
+
+Feel free to reach out for:
+- **🤝 Collaboration** - Open source contributions welcome
+- **💡 Consulting** - Cloud architecture and DevOps consulting
+- **🎓 Mentoring** - Career guidance in DevOps/Cloud
+- **📝 Speaking** - Tech talks and workshops
 
 ---
 
-### **🙏 Acknowledgments**
+<div align="center">
 
-*Special thanks to the amazing open-source community and all contributors who make projects like this possible!*
+### 🎉 **Thank You for Using AWS Infrastructure One-Click Automation Suite!**
 
-**🌟 Contributors & Supporters:**
-- AWS Community Builders Program
-- Kubernetes SIG-AWS
-- Open Source Community
-- Beta testers and early adopters
+*If this project helped you save time and money, please consider giving it a ⭐ on GitHub!*
+
+<img src="https://img.shields.io/github/stars/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social" alt="GitHub Stars" />
+
+**💡 Feature Requests • 🐛 Bug Reports • 🤝 Contributions**
+
+*All are welcome! Let's build something amazing together.*
 
 </div>
 
@@ -1931,17 +2722,8 @@ git push origin feature/amazing-feature
 
 <div align="center">
 
-### **⭐ If this project helped you, please consider giving it a star!**
+*Last updated: 2025-06-05 by @varadharajaan*
 
-<img src="https://img.shields.io/github/stars/varadharajaan/aws-create-iam-eks-ec2-one-click?style=social" />
-
-**🔔 Stay Updated** - Watch this repository for the latest features and updates!
-
----
-
-**📅 Last Updated**: 2025-06-05 15:48:02 UTC  
-**👤 Updated By**: varadharajaan  
-**🏷️ Version**: 2.1.0  
-**📊 Project Status**: Active Development
+**Version 2.0.0 - Enhanced with Spot Instance Intelligence**
 
 </div>
