@@ -1,8 +1,0 @@
-# ELB Parallel Deletion Report
-# Generated on: 2025-06-05 21:23:52 UTC
-# Executed by: varadharajaan
-# Total ELBs processed: 39
-# Max parallel workers: 5
-# Regions scanned: ap-south-1, us-east-1, us-east-2, us-west-1, us-west-2
-
-## Summary
