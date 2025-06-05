@@ -966,8 +966,8 @@ class EKSClusterManager:
                     user_update_cmd = [
                         'aws', 'eks', 'update-kubeconfig',
                         '--region', region,
-                        '--name', cluster_name,
-                        '--profile', username
+                        '--name', cluster_name
+                        #'--profile', username
                     ]
                     
                     user_update_result = subprocess.run(user_update_cmd, env=user_env, capture_output=True, text=True, timeout=120)
@@ -996,6 +996,45 @@ class EKSClusterManager:
             self.log_operation('ERROR', f"Failed to configure aws-auth ConfigMap for {cluster_name}: {error_msg}")
             self.print_colored(Colors.RED, f"❌ ConfigMap configuration failed: {error_msg}")
             return False
+    
+    # Add this method to the EKSClusterManager class around line 1186
+
+    def select_capacity_type(self, user_name: str = None) -> str:
+        """Allow user to select capacity type (Spot or On-Demand)"""
+        capacity_options = ['SPOT', 'ON_DEMAND']
+        default_type = 'SPOT'  # Default to SPOT for cost efficiency
+        
+        user_prefix = f"for {user_name} " if user_name else ""
+        print(f"\n💰 Capacity Type Selection {user_prefix}")
+        print("=" * 60)
+        print("Available capacity types:")
+        
+        for i, capacity_type in enumerate(capacity_options, 1):
+            is_default = " (default)" if capacity_type == default_type else ""
+            cost_info = " - Lower cost, may be interrupted" if capacity_type == 'SPOT' else " - Higher cost, stable"
+            print(f"  {i}. {capacity_type}{is_default}{cost_info}")
+        
+        print("=" * 60)
+        
+        while True:
+            try:
+                choice = input(f"Select capacity type (1-{len(capacity_options)}) [default: {default_type}]: ").strip()
+                
+                if not choice:
+                    selected_type = default_type
+                    break
+                
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(capacity_options):
+                    selected_type = capacity_options[choice_num - 1]
+                    break
+                else:
+                    print(f"❌ Please enter a number between 1 and {len(capacity_options)}")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        print(f"✅ Selected capacity type: {selected_type}")
+        return selected_type
     
     def test_user_access_enhanced(self, cluster_name: str, region: str, username: str, user_access_key: str, user_secret_key: str) -> bool:
         """Enhanced user access testing with detailed feedback"""
@@ -1297,17 +1336,16 @@ class EKSClusterManager:
                 'clusterName': cluster_name,
                 'nodegroupName': nodegroup_name,
                 'scalingConfig': {
-                    'minSize': 1,           # Minimum 1 node
-                    'maxSize': max_nodes,   # User-specified maximum
-                    'desiredSize': 1        # Start with 1 node (default)
+                    'minSize': 1,
+                    'maxSize': max_nodes,
+                    'desiredSize': 1
                 },
-                'instanceTypes': [instance_type],  # Use selected instance type
+                'instanceTypes': [instance_type],
                 'amiType': 'AL2_x86_64',
-                'diskSize': 20,  # Set disk size to 20 GB
+                'diskSize': 20,
                 'nodeRole': node_role_arn,
                 'subnets': subnet_ids,
-                'capacityType': 'SPOT'  # Explicitly specify SPOT capacity
-                #'capacityType': 'ON_DEMAND'  # Explicitly specify ondemand capacity
+                'capacityType': cluster_info.get('capacity_type', 'SPOT')
             }
             
             # Log the exact configuration being used
@@ -1476,6 +1514,7 @@ class EKSClusterManager:
                             
                             # Select instance type for this user
                             instance_type = self.select_instance_type(user_data.get('username', 'unknown'))
+                            capacity_type = self.select_capacity_type(user_data.get('username', 'unknown'))
                             
                             while True:
                                 try:
@@ -1494,13 +1533,16 @@ class EKSClusterManager:
                             
                             cluster_name = self.generate_cluster_name(user_data.get('username', 'unknown'), user_data.get('region', 'us-east-1'))
                             
+                            self.display_cost_estimation(instance_type, capacity_type, max_nodes)
+
                             cluster_config = {
                                 'account_key': account_name,
                                 'account_id': account_data.get('account_id', 'Unknown'),
                                 'user': user_data,
                                 'max_nodes': max_nodes,
                                 'cluster_name': cluster_name,
-                                'instance_type': instance_type  # Add selected instance type
+                                'instance_type': instance_type,  # Add selected instance type
+                                'capacity_type': capacity_type  # Add selected capacity type
                             }
                             
                             cluster_configs.append(cluster_config)
@@ -1550,7 +1592,8 @@ class EKSClusterManager:
             
             # Select instance type for this user
             instance_type = self.select_instance_type(user_info['username'])
-            
+            capacity_type = self.select_capacity_type(user_info['username'])
+
             while True:
                 try:
                     max_nodes = input(f"   🔢 Enter maximum nodes for scaling (1-10) [default: 3]: ").strip()
@@ -1574,13 +1617,42 @@ class EKSClusterManager:
                 'user': user_info['user_data'],
                 'max_nodes': max_nodes,
                 'cluster_name': cluster_name,
-                'instance_type': instance_type  # Add selected instance type
+                'instance_type': instance_type,  # Add selected instance type
+                'capacity_type': capacity_type  # Add selected capacity type
             }
             
             cluster_configs.append(cluster_config)
             print(f"   ✅ Cluster configured: {cluster_name} (max {max_nodes} nodes, {instance_type})")
         
         return cluster_configs
+    
+    # Add cost estimation display for both scripts:
+
+    def display_cost_estimation(self, instance_type: str, capacity_type: str, node_count: int = 1):
+        """Display estimated cost information"""
+        # This is a simplified estimation - you'd want to use actual AWS pricing API
+        base_costs = {
+            't3.micro': 0.0104,
+            't3.small': 0.0208,
+            't3.medium': 0.0416,
+            'c6a.large': 0.0864,
+            'c6a.xlarge': 0.1728
+        }
+        
+        base_cost = base_costs.get(instance_type, 0.05)  # Default fallback
+        
+        if capacity_type.lower() in ['spot', 'SPOT']:
+            estimated_cost = base_cost * 0.3  # Spot instances are typically 70% cheaper
+            savings = base_cost * 0.7
+            print(f"\n💰 Estimated Cost (per hour):")
+            print(f"   On-Demand: ${base_cost:.4f}")
+            print(f"   Spot: ${estimated_cost:.4f}")
+            print(f"   Savings: ${savings:.4f} ({70}%)")
+            print(f"   Monthly (730 hrs): ${estimated_cost * 730 * node_count:.2f}")
+        else:
+            print(f"\n💰 Estimated Cost (per hour):")
+            print(f"   On-Demand: ${base_cost:.4f}")
+            print(f"   Monthly (730 hrs): ${base_cost * 730 * node_count:.2f}")
 
     def show_cluster_summary(self, cluster_configs) -> bool:
         """Show summary of selected clusters and confirm creation"""
@@ -1636,6 +1708,7 @@ class EKSClusterManager:
         for cluster_info in successful_clusters:
             user = cluster_info['user']
             instance_type = cluster_info.get('instance_type', 'c6a.large')
+            capacity_type = cluster_info.get('capacity_type', 'SPOT')
             
             cluster_data = {
                 "cluster_name": cluster_info['cluster_name'],
@@ -1648,7 +1721,7 @@ class EKSClusterManager:
                 "default_nodes": 1,
                 "ami_type": "AL2_x86_64",
                 "disk_size": 20,
-                "capacity_type": "SPOT",
+                "capacity_type": capacity_type.upper(),  # Use selected capacity type
                 "user_credentials": {
                     "access_key_id": user.get('access_key_id', ''),
                     "secret_access_key": user.get('secret_access_key', ''),

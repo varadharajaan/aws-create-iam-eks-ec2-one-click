@@ -103,3 +103,4 @@ dmypy.json
 /elb_deletion_report*
 /iam_cleanup_report*
 /iam_deletion_report*
+/user_instructions_*

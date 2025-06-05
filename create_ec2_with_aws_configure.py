@@ -687,7 +687,7 @@ class EC2InstanceManager:
                     ec2_client = self.create_ec2_client(access_key, secret_key, region)
                     
                     # Create instance
-                    instance_info = self.create_instance(
+                    instance_info = self.create_instance_with_capacity_type(
                         ec2_client, 
                         self.user_data_script, 
                         region, 
