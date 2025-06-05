@@ -1024,7 +1024,7 @@ class EC2InstanceManager:
             else:
                 raise
 
-    def create_instance(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro', capacity_type):        
+    def create_instance(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro', capacity_type='on-demand'):        
         """Create an On-Demand EC2 instance for a specific IAM user"""
         try:
             # Get AMI for the region
