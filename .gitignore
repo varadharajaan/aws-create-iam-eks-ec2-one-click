@@ -100,3 +100,4 @@ dmypy.json
 /eks_deletion_report_*
 /eks_deletion_log*
 /elb_cleanup_log*
+/elb_deletion_report*
