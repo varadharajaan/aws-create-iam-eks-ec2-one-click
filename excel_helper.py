@@ -320,8 +320,8 @@ if __name__ == "__main__":
                             "email": "Ruslan.Khokhlov@bakerhughes.com"
                         },
                         "region": "us-east-2",
-                        "access_key_id": "AKIAZ2Z********44OIL",
-                        "secret_access_key": "AmHn+mwYKQ2hhLWw2qJt***********H",
+                        "access_key_id": ",
+                        "secret_access_key": "",
                         "console_password": "DemoUser@123",
                         "console_url": "https://676004093025.signin.aws.amazon.com/console"
                     }
