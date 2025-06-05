@@ -630,7 +630,7 @@ class EC2InstanceManager:
             self.log_operation('ERROR', f"Error creating security group {group_name}: {e}")
             raise
 
-    def create_instances_for_selected_accounts(self, selected_accounts, instance_type='t3.micro', wait_for_running=True):
+    def create_instances_for_selected_accounts(self, selected_accounts, instance_type='t3.micro', capacity_type='spot', wait_for_running=True):
         """Create EC2 instances for users in selected accounts"""
         created_instances = []
         failed_instances = []
@@ -695,7 +695,8 @@ class EC2InstanceManager:
                         real_user_info,
                         access_key,      # Pass credentials
                         secret_key,      # Pass credentials
-                        instance_type
+                        instance_type,
+                        capacity_type
                     )
                     
                     # Wait for instance to be running (optional)
@@ -808,8 +809,54 @@ class EC2InstanceManager:
         
         return enhanced_userdata
 
-    def create_instance_spot(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro'):
-        """Create a Spot EC2 instance for a specific IAM user"""
+    def select_capacity_type_ec2(self, user_name: str = None) -> str:
+        """Allow user to select EC2 capacity type (Spot or On-Demand)"""
+        capacity_options = ['spot', 'on-demand']
+        default_type = 'spot'  # Default to spot for cost efficiency
+        
+        user_prefix = f"for {user_name} " if user_name else ""
+        print(f"\n💰 EC2 Capacity Type Selection {user_prefix}")
+        print("=" * 60)
+        print("Available capacity types:")
+        
+        for i, capacity_type in enumerate(capacity_options, 1):
+            is_default = " (default)" if capacity_type == default_type else ""
+            cost_info = " - Up to 90% savings, may be interrupted" if capacity_type == 'spot' else " - Standard pricing, stable"
+            print(f"  {i}. {capacity_type.title()}{is_default}{cost_info}")
+        
+        print("=" * 60)
+        
+        while True:
+            try:
+                choice = input(f"Select capacity type (1-{len(capacity_options)}) [default: {default_type}]: ").strip()
+                
+                if not choice:
+                    selected_type = default_type
+                    break
+                
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(capacity_options):
+                    selected_type = capacity_options[choice_num - 1]
+                    break
+                else:
+                    print(f"❌ Please enter a number between 1 and {len(capacity_options)}")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        print(f"✅ Selected capacity type: {selected_type}")
+        return selected_type
+    
+    def create_instance_with_capacity_type(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro', capacity_type='spot'):
+        """Create EC2 instance with specified capacity type"""
+        self.log_operation('INFO', f"Creating {capacity_type} instance for {username}")
+        
+        if capacity_type.lower() == 'spot':
+            return self.create_instance_spot(ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type, capacity_type)
+        else:
+            return self.create_instance(ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type, capacity_type)
+        
+    def create_instance_spot(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro', capacity_type='spot'):
+        """Create a Spot EC2 instance for a specific IAM user with enhanced error handling"""
         try:
             # Get AMI for the region
             ami_id = self.ami_config['region_ami_mapping'].get(region)
@@ -831,20 +878,22 @@ class EC2InstanceManager:
             random_suffix = self.generate_random_suffix(4)
             
             # Create security group
-            sg_name = f"{username}-all-traffic-sg-{random_suffix}"
+            sg_name = f"{username}-spot-sg-{random_suffix}"  # Changed to indicate spot
             sg_id = self.create_security_group(ec2_client, vpc_id, sg_name, region)
             
             # Prepare tags with real user information
             tags = [
-                {'Key': 'Name', 'Value': f'{username}-instance-{random_suffix}'},
+                {'Key': 'Name', 'Value': f'{username}-spot-instance-{random_suffix}'},  # Added 'spot' to name
                 {'Key': 'Owner', 'Value': username},
-                {'Key': 'Purpose', 'Value': 'IAM-User-Instance'},
+                {'Key': 'Purpose', 'Value': 'IAM-User-Spot-Instance'},  # Updated purpose
+                {'Key': 'CapacityType', 'Value': 'spot'},  # Added capacity type tag
                 {'Key': 'CreatedBy', 'Value': self.current_user},
                 {'Key': 'CreatedAt', 'Value': self.current_time},
                 {'Key': 'Region', 'Value': region},
                 {'Key': 'UserDataScript', 'Value': self.userdata_file},
                 {'Key': 'CredentialsFile', 'Value': self.credentials_file},
-                {'Key': 'ExecutionTimestamp', 'Value': self.execution_timestamp}
+                {'Key': 'ExecutionTimestamp', 'Value': self.execution_timestamp},
+                {'Key': 'InstanceType', 'Value': instance_type}
             ]
             
             # Add real user information to tags
@@ -858,57 +907,124 @@ class EC2InstanceManager:
                 if real_user_info.get('last_name'):
                     tags.append({'Key': 'RealUserLastName', 'Value': real_user_info['last_name']})
             
-            self.log_operation('INFO', f"Instance configuration - Type: {instance_type}, VPC: {vpc_id}, Subnet: {subnet_id}, SG: {sg_id}")
+            self.log_operation('INFO', f"Spot instance configuration - Type: {instance_type}, VPC: {vpc_id}, Subnet: {subnet_id}, SG: {sg_id}")
             
-            # Create Spot Instance with AWS CLI configuration
-            response = ec2_client.run_instances(
-                ImageId=ami_id,
-                MinCount=1,
-                MaxCount=1,
-                InstanceType=instance_type,
-                SecurityGroupIds=[sg_id],
-                SubnetId=subnet_id,
-                UserData=self.prepare_userdata_with_aws_config(user_data, access_key, secret_key, region),
-                InstanceMarketOptions={
-                    'MarketType': 'spot',
-                    'SpotOptions': {
-                        'SpotInstanceType': 'one-time',
-                        'InstanceInterruptionBehavior': 'terminate'
-                        # Optional: 'MaxPrice': '0.01'
-                    }
-                },
-                TagSpecifications=[
-                    {
-                        'ResourceType': 'instance',
-                        'Tags': tags
-                    }
-                ]
-            )
-            
-            instance_id = response['Instances'][0]['InstanceId']
-            instance_type_actual = response['Instances'][0]['InstanceType']
-            
-            self.log_operation('INFO', f"✅ Successfully created Spot instance {instance_id} for user {username} with suffix {random_suffix}")            
-            
-            return {
-                'instance_id': instance_id,
-                'instance_type': instance_type_actual,
-                'region': region,
-                'ami_id': ami_id,
-                'vpc_id': vpc_id,
-                'subnet_id': subnet_id,
-                'security_group_id': sg_id,
-                'username': username,
-                'real_user_info': real_user_info,
-                'userdata_file': self.userdata_file,
-                'credentials_file': self.credentials_file
-            }
-            
-        except Exception as e:
-            self.log_operation('ERROR', f"❌ Failed to create Spot instance for user {username}: {str(e)}")
+            # Enhanced Spot Instance configuration with better error handling
+            try:
+                # Get current spot price for reference (optional logging)
+                try:
+                    spot_prices = ec2_client.describe_spot_price_history(
+                        InstanceTypes=[instance_type],
+                        ProductDescriptions=['Linux/UNIX'],
+                        MaxResults=1
+                    )
+                    if spot_prices['SpotPriceHistory']:
+                        current_spot_price = spot_prices['SpotPriceHistory'][0]['SpotPrice']
+                        self.log_operation('INFO', f"Current spot price for {instance_type}: ${current_spot_price}/hour")
+                except Exception as spot_price_error:
+                    self.log_operation('WARNING', f"Could not retrieve spot price: {spot_price_error}")
+                
+                # Create Spot Instance with enhanced configuration
+                response = ec2_client.run_instances(
+                    ImageId=ami_id,
+                    MinCount=1,
+                    MaxCount=1,
+                    InstanceType=instance_type,
+                    SecurityGroupIds=[sg_id],
+                    SubnetId=subnet_id,
+                    UserData=self.prepare_userdata_with_aws_config(user_data, access_key, secret_key, region),
+                    InstanceMarketOptions={
+                        'MarketType': 'spot',
+                        'SpotOptions': {
+                            'SpotInstanceType': 'one-time',
+                            'InstanceInterruptionBehavior': 'terminate',
+                            # Optional: Set max price to prevent unexpected charges
+                            # 'MaxPrice': '0.05'  # Uncomment and adjust as needed
+                        }
+                    },
+                    TagSpecifications=[
+                        {
+                            'ResourceType': 'instance',
+                            'Tags': tags
+                        },
+                        {
+                            'ResourceType': 'volume',  # Also tag the EBS volume
+                            'Tags': [
+                                {'Key': 'Name', 'Value': f'{username}-spot-volume-{random_suffix}'},
+                                {'Key': 'Owner', 'Value': username},
+                                {'Key': 'CapacityType', 'Value': 'spot'}
+                            ]
+                        }
+                    ],
+                    # Enable detailed monitoring for better spot instance management
+                    Monitoring={'Enabled': True}
+                )
+                
+                instance_id = response['Instances'][0]['InstanceId']
+                instance_type_actual = response['Instances'][0]['InstanceType']
+                instance_state = response['Instances'][0]['State']['Name']
+                
+                # Log spot instance specific information
+                if 'SpotInstanceRequestId' in response['Instances'][0]:
+                    spot_request_id = response['Instances'][0]['SpotInstanceRequestId']
+                    self.log_operation('INFO', f"Spot request ID: {spot_request_id}")
+                
+                self.log_operation('INFO', f"✅ Successfully created Spot instance {instance_id} for user {username} with suffix {random_suffix}")
+                self.log_operation('INFO', f"Instance state: {instance_state}, Actual type: {instance_type_actual}")
+                
+                # Return enhanced instance information
+                return {
+                    'instance_id': instance_id,
+                    'instance_type': instance_type_actual,
+                    'capacity_type': 'spot',  # Explicitly mark as spot
+                    'instance_state': instance_state,
+                    'region': region,
+                    'ami_id': ami_id,
+                    'vpc_id': vpc_id,
+                    'subnet_id': subnet_id,
+                    'security_group_id': sg_id,
+                    'username': username,
+                    'real_user_info': real_user_info,
+                    'userdata_file': self.userdata_file,
+                    'credentials_file': self.credentials_file,
+                    'random_suffix': random_suffix,
+                    'market_type': 'spot'  # For compatibility
+                }
+                
+            except Exception as spot_creation_error:
+                # Handle specific spot instance creation errors
+                error_msg = str(spot_creation_error)
+                
+                if 'SpotMaxPriceTooLow' in error_msg:
+                    self.log_operation('ERROR', f"Spot price too low for {instance_type} in {region}")
+                    raise ValueError(f"Spot capacity not available for {instance_type} in {region} at current price")
+                elif 'InsufficientInstanceCapacity' in error_msg:
+                    self.log_operation('ERROR', f"Insufficient spot capacity for {instance_type} in {region}")
+                    raise ValueError(f"No spot capacity available for {instance_type} in {region}")
+                elif 'SpotFleetRequestConfigurationInvalid' in error_msg:
+                    self.log_operation('ERROR', f"Invalid spot configuration for {instance_type}")
+                    raise ValueError(f"Invalid spot instance configuration for {instance_type}")
+                else:
+                    self.log_operation('ERROR', f"Spot instance creation failed: {error_msg}")
+                    raise
+                
+        except ValueError as ve:
+            # Re-raise ValueError with context
+            self.log_operation('ERROR', f"❌ Configuration error for Spot instance {username}: {str(ve)}")
             raise
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"❌ Failed to create Spot instance for user {username}: {error_msg}")
+            
+            # Provide helpful error context
+            if 'InvalidInstanceType' in error_msg:
+                raise ValueError(f"Instance type {instance_type} is not available in region {region}")
+            elif 'UnauthorizedOperation' in error_msg:
+                raise ValueError(f"Insufficient permissions to create spot instances for user {username}")
+            else:
+                raise
 
-    def create_instance(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro'):
+    def create_instance(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro', capacity_type):        
         """Create an On-Demand EC2 instance for a specific IAM user"""
         try:
             # Get AMI for the region
@@ -1108,7 +1224,6 @@ class EC2InstanceManager:
         except Exception as e:
             self.log_operation('ERROR', f"❌ Instance creation failed for user {username}: {str(e)}")
             raise
-
 
     def create_instance_ondemand(self, ec2_client, user_data, region, username, real_user_info, access_key, secret_key, instance_type='t3.micro'):
         """Create an EC2 instance for a specific IAM user"""
@@ -1644,6 +1759,34 @@ class EC2InstanceManager:
                 print("❌ Invalid input. Please enter a number or press Enter for default.")
                 self.log_operation('WARNING', f"Invalid instance type input format: {choice}")
 
+    # Add cost estimation display for both scripts:
+
+    def display_cost_estimation(self, instance_type: str, capacity_type: str, node_count: int = 1):
+        """Display estimated cost information"""
+        # This is a simplified estimation - you'd want to use actual AWS pricing API
+        base_costs = {
+            't3.micro': 0.0104,
+            't3.small': 0.0208,
+            't3.medium': 0.0416,
+            'c6a.large': 0.0864,
+            'c6a.xlarge': 0.1728
+        }
+        
+        base_cost = base_costs.get(instance_type, 0.05)  # Default fallback
+        
+        if capacity_type.lower() in ['spot', 'SPOT']:
+            estimated_cost = base_cost * 0.3  # Spot instances are typically 70% cheaper
+            savings = base_cost * 0.7
+            print(f"\n💰 Estimated Cost (per hour):")
+            print(f"   On-Demand: ${base_cost:.4f}")
+            print(f"   Spot: ${estimated_cost:.4f}")
+            print(f"   Savings: ${savings:.4f} ({70}%)")
+            print(f"   Monthly (730 hrs): ${estimated_cost * 730 * node_count:.2f}")
+        else:
+            print(f"\n💰 Estimated Cost (per hour):")
+            print(f"   On-Demand: ${base_cost:.4f}")
+            print(f"   Monthly (730 hrs): ${base_cost * 730 * node_count:.2f}")
+
     def run(self):
         """Main execution method"""
         try:
@@ -1723,6 +1866,8 @@ class EC2InstanceManager:
             
             # Select instance type
             instance_type = self.display_instance_menu()
+
+            capacity_type = self.select_capacity_type_ec2()
             
             # Calculate totals for final selection
             total_users = sum(len(account_data.get('users', [])) 
@@ -1734,6 +1879,9 @@ class EC2InstanceManager:
             print(f"   📈 Selected accounts: {len(final_accounts)}")
             print(f"   👥 Total users: {total_users}")
             print(f"   💻 Instance type: {instance_type}")
+            # ADD THIS: Show cost estimation for all instances
+            print(f"\n📊 Total Cost Estimation for {total_users} instances:")
+            self.display_cost_estimation(instance_type, capacity_type, total_users)
             
             # Show account breakdown
             print(f"\n🏦 Final Account/User Breakdown:")
@@ -1775,6 +1923,7 @@ class EC2InstanceManager:
             created_instances, failed_instances = self.create_instances_for_selected_accounts(
                 final_accounts,
                 instance_type=instance_type,
+                capacity_type=capacity_type,  # Add this line
                 wait_for_running=True
             )
             
