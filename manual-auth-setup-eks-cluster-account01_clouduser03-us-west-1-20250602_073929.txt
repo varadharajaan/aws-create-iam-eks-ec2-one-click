@@ -11,7 +11,6 @@ chmod +x kubectl
 sudo mv kubectl /usr/local/bin/
 
 ## Configure cluster access
-# Set AWS credentials for admin access
 
 export AWS_DEFAULT_REGION=us-west-1
 
