@@ -1,0 +1,32 @@
+# Manual aws-auth ConfigMap Setup for eks-cluster-account01_clouduser03-us-west-1
+# Generated on: 2025-06-02 07:39:46 UTC
+# Cluster: eks-cluster-account01_clouduser03-us-west-1
+# Region: us-west-1
+# User: account01_clouduser03
+
+## Prerequisites
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+
+## Configure cluster access
+# Set AWS credentials for admin access
+export AWS_ACCESS_KEY_ID=AKIAZ2ZH33RQQOPB5Y5C
+export AWS_SECRET_ACCESS_KEY=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
+export AWS_DEFAULT_REGION=us-west-1
+
+# Update kubeconfig
+aws eks update-kubeconfig --region us-west-1 --name eks-cluster-account01_clouduser03-us-west-1
+
+# Apply the ConfigMap
+kubectl apply -f C:\Users\varad\OneDrive\Desktop\aws_account_setup\aws-auth-eks-cluster-account01_clouduser03-us-west-1-20250602_073929.yaml
+
+# Verify ConfigMap
+kubectl get configmap aws-auth -n kube-system -o yaml
+
+# Test user access (after setting user credentials)
+export AWS_ACCESS_KEY_ID=AKIAZ2ZH33RQ3I3PBWQ3
+export AWS_SECRET_ACCESS_KEY=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
+aws eks update-kubeconfig --region us-west-1 --name eks-cluster-account01_clouduser03-us-west-1
+kubectl get nodes
