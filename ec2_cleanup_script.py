@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3Add commentMore actions
 
 import boto3
 import json
@@ -518,112 +518,10 @@ class EC2CleanupManager:
             self.log_operation('ERROR', f"Error finding security groups for instance {instance_id}: {e}")
             return []
 
-    def clear_security_group_rules(self, ec2_client, sg_id):
-        """Clear all ingress and egress rules from a security group"""
-        try:
-            self.log_operation('INFO', f"🧹 Clearing rules for security group {sg_id}")
-            
-            # Get security group details
-            try:
-                response = ec2_client.describe_security_groups(GroupIds=[sg_id])
-                sg_info = response['SecurityGroups'][0]
-            except ClientError as e:
-                if e.response['Error']['Code'] == 'InvalidGroupId.NotFound':
-                    self.log_operation('INFO', f"Security group {sg_id} does not exist, skipping rule clearing")
-                    return True
-                else:
-                    raise
-            
-            sg_name = sg_info['GroupName']
-            ingress_rules = sg_info.get('IpPermissions', [])
-            egress_rules = sg_info.get('IpPermissionsEgress', [])
-            
-            rules_cleared = 0
-            rules_failed = 0
-            
-            # Clear ingress rules
-            if ingress_rules:
-                self.log_operation('INFO', f"Removing {len(ingress_rules)} ingress rules from {sg_id} ({sg_name})")
-                try:
-                    ec2_client.revoke_security_group_ingress(
-                        GroupId=sg_id,
-                        IpPermissions=ingress_rules
-                    )
-                    rules_cleared += len(ingress_rules)
-                    self.log_operation('INFO', f"✅ Successfully removed {len(ingress_rules)} ingress rules from {sg_id}")
-                except ClientError as e:
-                    error_code = e.response['Error']['Code']
-                    if error_code == 'InvalidGroupId.NotFound':
-                        self.log_operation('INFO', f"Security group {sg_id} no longer exists")
-                        return True
-                    elif error_code == 'InvalidPermission.NotFound':
-                        self.log_operation('INFO', f"Ingress rules already removed from {sg_id}")
-                        rules_cleared += len(ingress_rules)
-                    else:
-                        self.log_operation('ERROR', f"Failed to remove ingress rules from {sg_id}: {e}")
-                        rules_failed += len(ingress_rules)
-            
-            # Clear egress rules (but keep the default allow-all rule if it exists)
-            if egress_rules:
-                # Filter out the default egress rule (0.0.0.0/0 for all traffic)
-                non_default_egress = []
-                for rule in egress_rules:
-                    # Default rule: protocol=-1, port=all, destination=0.0.0.0/0
-                    is_default = (
-                        rule.get('IpProtocol') == '-1' and
-                        len(rule.get('IpRanges', [])) == 1 and
-                        rule.get('IpRanges', [{}])[0].get('CidrIp') == '0.0.0.0/0' and
-                        not rule.get('UserIdGroupPairs') and
-                        not rule.get('PrefixListIds')
-                    )
-                    
-                    if not is_default:
-                        non_default_egress.append(rule)
-                
-                if non_default_egress:
-                    self.log_operation('INFO', f"Removing {len(non_default_egress)} non-default egress rules from {sg_id} ({sg_name})")
-                    try:
-                        ec2_client.revoke_security_group_egress(
-                            GroupId=sg_id,
-                            IpPermissions=non_default_egress
-                        )
-                        rules_cleared += len(non_default_egress)
-                        self.log_operation('INFO', f"✅ Successfully removed {len(non_default_egress)} egress rules from {sg_id}")
-                    except ClientError as e:
-                        error_code = e.response['Error']['Code']
-                        if error_code == 'InvalidGroupId.NotFound':
-                            self.log_operation('INFO', f"Security group {sg_id} no longer exists")
-                            return True
-                        elif error_code == 'InvalidPermission.NotFound':
-                            self.log_operation('INFO', f"Egress rules already removed from {sg_id}")
-                            rules_cleared += len(non_default_egress)
-                        else:
-                            self.log_operation('ERROR', f"Failed to remove egress rules from {sg_id}: {e}")
-                            rules_failed += len(non_default_egress)
-                else:
-                    self.log_operation('INFO', f"No non-default egress rules to remove from {sg_id}")
-            
-            total_rules = len(ingress_rules) + len(egress_rules)
-            if total_rules == 0:
-                self.log_operation('INFO', f"No rules found in security group {sg_id}")
-            else:
-                self.log_operation('INFO', f"Rule clearing summary for {sg_id}: {rules_cleared} cleared, {rules_failed} failed")
-            
-            # Wait briefly for rule changes to propagate
-            if rules_cleared > 0:
-                self.log_operation('INFO', f"Waiting 5 seconds for rule changes to propagate...")
-                time.sleep(5)
-            
-            return rules_failed == 0
-            
-        except Exception as e:
-            self.log_operation('ERROR', f"Unexpected error clearing rules for security group {sg_id}: {e}")
-            return False
-
     def delete_security_group(self, ec2_client, sg_id):
-        """Delete a security group after clearing its rules"""
+        """Delete a security group"""
         try:
-            self.log_operation('INFO', f"🗑️  Deleting security group {sg_id}")
+            self.log_operation('INFO', f"Deleting security group {sg_id}")
             
             # Check if security group exists and get details
             try:
@@ -641,15 +539,7 @@ class EC2CleanupManager:
                 else:
                     raise
             
-            # Step 1: Clear all security group rules first
-            self.log_operation('INFO', f"Step 1: Clearing security group rules for {sg_id}")
-            rules_cleared = self.clear_security_group_rules(ec2_client, sg_id)
-            
-            if not rules_cleared:
-                self.log_operation('WARNING', f"Some rules could not be cleared from {sg_id}, proceeding with deletion attempt")
-            
-            # Step 2: Attempt to delete the security group
-            self.log_operation('INFO', f"Step 2: Attempting to delete security group {sg_id}")
+            # Attempt to delete the security group
             ec2_client.delete_security_group(GroupId=sg_id)
             self.log_operation('INFO', f"✅ Successfully deleted security group {sg_id}")
             return True
@@ -660,13 +550,157 @@ class EC2CleanupManager:
                 self.log_operation('INFO', f"Security group {sg_id} does not exist")
                 return True
             elif error_code == 'DependencyViolation':
-                self.log_operation('WARNING', f"Cannot delete security group {sg_id}: still in use by other resources after rule clearing")
+                self.log_operation('WARNING', f"Cannot delete security group {sg_id}: still in use by other resources")
                 return False
             else:
                 self.log_operation('ERROR', f"Failed to delete security group {sg_id}: {e}")
                 return False
         except Exception as e:
             self.log_operation('ERROR', f"Unexpected error deleting security group {sg_id}: {e}")
+            return False
+
+    def cleanup_instance(self, instance_info):
+        """Cleanup a single instance and its security groups"""
+        try:
+            instance_id = instance_info.get('instance_id')
+            region = instance_info.get('region')
+            username = instance_info.get('username', 'unknown')
+            account_name = instance_info.get('account_name', 'unknown')
+            
+            if not instance_id or not region:
+                self.log_operation('ERROR', f"Missing instance_id or region for {username}")
+                return False
+            
+            self.log_operation('INFO', f"🧹 Starting cleanup for instance {instance_id} ({username}) in {region}")
+            
+            # Get credentials for this user
+            access_key, secret_key = self.get_credentials_for_instance(instance_info)
+            if not access_key or not secret_key:
+                self.log_operation('ERROR', f"No credentials found for {username}, skipping cleanup")
+                self.cleanup_results['failed_deletions'].append({
+                    'instance_id': instance_id,
+                    'username': username,
+                    'region': region,
+                    'account_name': account_name,
+                    'error': 'No credentials found'
+                })
+                return False
+            
+            # Create EC2 client
+            try:
+                ec2_client = self.create_ec2_client(access_key, secret_key, region)
+            except Exception as e:
+                self.log_operation('ERROR', f"Failed to create EC2 client for {username}: {e}")
+                self.cleanup_results['failed_deletions'].append({
+                    'instance_id': instance_id,
+                    'username': username,
+                    'region': region,
+                    'account_name': account_name,
+                    'error': f'Failed to create EC2 client: {str(e)}'
+                })
+                return False
+            
+            # Check if instance exists
+            exists, state, instance_data = self.check_instance_exists(ec2_client, instance_id)
+            
+            if not exists:
+                self.log_operation('INFO', f"Instance {instance_id} does not exist, skipping to security group cleanup")
+                self.cleanup_results['skipped_instances'].append({
+                    'instance_id': instance_id,
+                    'username': username,
+                    'region': region,
+                    'account_name': account_name,
+                    'reason': 'Instance does not exist'
+                })
+            else:
+                if state == 'terminated':
+                    self.log_operation('INFO', f"Instance {instance_id} already terminated")
+                    self.cleanup_results['skipped_instances'].append({
+                        'instance_id': instance_id,
+                        'username': username,
+                        'region': region,
+                        'account_name': account_name,
+                        'reason': 'Already terminated'
+                    })
+                else:
+                    # Terminate the instance
+                    try:
+                        success = self.terminate_instance(ec2_client, instance_id, wait_for_termination=True)
+                        if success:
+                            self.cleanup_results['deleted_instances'].append({
+                                'instance_id': instance_id,
+                                'username': username,
+                                'region': region,
+                                'account_name': account_name,
+                                'previous_state': state
+                            })
+                        else:
+                            raise Exception("Termination failed or timed out")
+                    except Exception as e:
+                        self.log_operation('ERROR', f"Failed to terminate instance {instance_id}: {e}")
+                        self.cleanup_results['failed_deletions'].append({
+                            'instance_id': instance_id,
+                            'username': username,
+                            'region': region,
+                            'account_name': account_name,
+                            'error': f'Termination failed: {str(e)}'
+                        })
+                        return False
+            
+            # Find and delete security groups
+            security_groups = self.find_security_groups_for_instance(ec2_client, instance_id, username)
+            
+            if security_groups:
+                self.log_operation('INFO', f"Found {len(security_groups)} security groups for cleanup: {security_groups}")
+                
+                # Wait a bit for instance termination to complete before deleting security groups
+                if exists and state != 'terminated':
+                    self.log_operation('INFO', "Waiting 30 seconds for instance termination to complete before deleting security groups")
+                    time.sleep(30)
+                
+                for sg_id in security_groups:
+                    try:
+                        success = self.delete_security_group(ec2_client, sg_id)
+                        if success:
+                            self.cleanup_results['deleted_security_groups'].append({
+                                'security_group_id': sg_id,
+                                'instance_id': instance_id,
+                                'username': username,
+                                'region': region,
+                                'account_name': account_name
+                            })
+                        else:
+                            self.cleanup_results['failed_deletions'].append({
+                                'instance_id': instance_id,
+                                'username': username,
+                                'region': region,
+                                'account_name': account_name,
+                                'error': f'Failed to delete security group {sg_id}'
+                            })
+                    except Exception as e:
+                        self.log_operation('ERROR', f"Error deleting security group {sg_id}: {e}")
+                        self.cleanup_results['failed_deletions'].append({
+                            'instance_id': instance_id,
+                            'username': username,
+                            'region': region,
+                            'account_name': account_name,
+                            'error': f'Security group deletion error: {str(e)}'
+                        })
+            else:
+                self.log_operation('INFO', f"No security groups found for cleanup for instance {instance_id}")
+            
+            self.log_operation('INFO', f"✅ Completed cleanup for instance {instance_id} ({username})")
+            return True
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Unexpected error during cleanup of instance {instance_id}: {e}")
+            self.cleanup_results['failed_deletions'].append({
+                'instance_id': instance_info.get('instance_id', 'unknown'),
+                'username': instance_info.get('username', 'unknown'),
+                'region': instance_info.get('region', 'unknown'),
+                'account_name': instance_info.get('account_name', 'unknown'),
+                'error': f'Unexpected error: {str(e)}'
+            })
             return False
 
     def save_cleanup_report(self):
