@@ -109,4 +109,6 @@ dmypy.json
 /ultra_ec2_cleanup_*
 /ec2_cleanup_*
 /ec2/*
+/eks/*
+/iam/*
 file_organizer.log
