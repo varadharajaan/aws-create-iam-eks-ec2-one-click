@@ -77,6 +77,8 @@ dmypy.json
 /output/
 /livestatus/
 /livecost/
+/aws_accounts_config.json
+/iam_users_credentials_*
 
 # Specific files and patterns
 /kubectl_commands_*
@@ -86,7 +88,6 @@ dmypy.json
 /ec2_instance_report*
 /ec2_creation_log*
 /cost_calculations*
-/iam_users_credentials_*
 /iam_user_instance_mapping_*
 /ultra_ec2_cleanup_report_*
 /eks_deletion_report_*.txt
@@ -96,7 +97,7 @@ dmypy.json
 /ec2_instances_report_*.json
 /ec2_report_*.json
 /aws_account_info_*.json
-/aws_accounts_config.json
+
 /eks_deletion_report_*
 /eks_deletion_log*
 /elb_cleanup_log*
@@ -107,3 +108,5 @@ dmypy.json
 /aws_resource_creation_*
 /ultra_ec2_cleanup_*
 /ec2_cleanup_*
+/ec2/*
+file_organizer.log
