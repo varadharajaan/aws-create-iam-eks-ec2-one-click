@@ -88,8 +88,10 @@ else
     curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-latest.x86_64.rpm
     if [ "$PKG_MANAGER" = "dnf" ]; then
         dnf install -y minikube-latest.x86_64.rpm
+        dnf install mariadb105
     else
         yum install -y minikube-latest.x86_64.rpm
+        yum install mariadb105
     fi
     rm minikube-latest.x86_64.rpm
 fi

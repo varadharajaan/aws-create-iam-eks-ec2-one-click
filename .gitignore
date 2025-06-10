@@ -112,3 +112,6 @@ dmypy.json
 /eks/*
 /iam/*
 file_organizer.log
+/aws/*
+cloud-nuke_windows_amd64.exe
+cloudnuke*

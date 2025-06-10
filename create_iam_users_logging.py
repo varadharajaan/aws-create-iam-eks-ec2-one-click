@@ -126,16 +126,20 @@ class IAMUserManager:
                 raise e
 
     def get_users_for_account(self, account_name):
-        """Get user-region mapping for specific account"""
+        """Get user-region mapping for specific account, supporting per-account user count overrides."""
         regions = self.user_settings['user_regions']
-        users_count = self.user_settings['users_per_account']
-        
+        # Check for per-account override
+        if 'users_per_account' in self.aws_accounts[account_name]:
+            users_count = self.aws_accounts[account_name]['users_per_account']
+        else:
+            users_count = self.user_settings['users_per_account']
+
         users_regions = {}
         for i in range(1, users_count + 1):
             username = f"{account_name}_clouduser{i:02d}"
             region = regions[(i-1) % len(regions)]  # Cycle through regions
             users_regions[username] = region
-            
+
         return users_regions
 
     def create_restriction_policy(self, region):
