@@ -1263,6 +1263,764 @@ class EKSClusterManager:
         self.generate_final_commands()
         self.generate_user_instructions()
 
+    def ensure_directory_exists(self, directory_path: str) -> str:
+        """Ensure directory exists, create if it doesn't"""
+        try:
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {directory_path}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {directory_path}")
+            return directory_path
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create directory {directory_path}: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create directory {directory_path}: {str(e)}")
+            return "."  # Fallback to current directory
+
+    def get_diversified_instance_types(self, primary_instance_type: str) -> List[str]:
+        """Get diversified instance types for better spot availability"""
+        
+        # Instance type families mapping
+        instance_families = {
+            'c5.large': ['c5.large', 'c5a.large', 'c4.large'],
+            'c5.xlarge': ['c5.xlarge', 'c5a.xlarge', 'c4.xlarge'],
+            'c6a.large': ['c6a.large', 'c5.large', 'c5a.large'],
+            'c6a.xlarge': ['c6a.xlarge', 'c5.xlarge', 'c5a.xlarge'],
+            'm5.large': ['m5.large', 'm5a.large', 'm4.large'],
+            'm5.xlarge': ['m5.xlarge', 'm5a.xlarge', 'm4.xlarge'],
+            't3.medium': ['t3.medium', 't3a.medium', 't2.medium'],
+            't3.large': ['t3.large', 't3a.large', 't2.large']
+        }
+        
+        # Get diversified types or fallback to primary type
+        diversified_types = instance_families.get(primary_instance_type, [primary_instance_type])
+        
+        self.log_operation('INFO', f"Using diversified instance types: {diversified_types}")
+        return diversified_types
+
+    def install_essential_addons(self, eks_client, cluster_name: str) -> bool:
+        """Install essential EKS add-ons"""
+        try:
+            self.log_operation('INFO', f"Installing essential add-ons for cluster {cluster_name}")
+            
+            # Define add-ons with their versions for EKS 1.28
+            addons = [
+                {
+                    'addonName': 'vpc-cni',
+                    'addonVersion': 'v1.15.1-eksbuild.1',
+                    'description': 'VPC CNI for pod networking'
+                },
+                {
+                    'addonName': 'coredns',
+                    'addonVersion': 'v1.10.1-eksbuild.5',
+                    'description': 'CoreDNS for cluster DNS'
+                },
+                {
+                    'addonName': 'kube-proxy',
+                    'addonVersion': 'v1.28.2-eksbuild.2',
+                    'description': 'Kube-proxy for service discovery'
+                },
+                {
+                    'addonName': 'aws-ebs-csi-driver',
+                    'addonVersion': 'v1.25.0-eksbuild.1',
+                    'description': 'EBS CSI driver for persistent volumes'
+                }
+            ]
+            
+            successful_addons = []
+            failed_addons = []
+            
+            for addon in addons:
+                try:
+                    self.print_colored(Colors.CYAN, f"   📦 Installing {addon['addonName']} ({addon['description']})...")
+                    
+                    eks_client.create_addon(
+                        clusterName=cluster_name,
+                        addonName=addon['addonName'],
+                        addonVersion=addon['addonVersion'],
+                        resolveConflicts='OVERWRITE'  # Overwrite any conflicts
+                    )
+                    
+                    # Wait for addon to be active
+                    waiter = eks_client.get_waiter('addon_active')
+                    waiter.wait(
+                        clusterName=cluster_name,
+                        addonName=addon['addonName'],
+                        WaiterConfig={'Delay': 15, 'MaxAttempts': 20}
+                    )
+                    
+                    successful_addons.append(addon['addonName'])
+                    self.print_colored(Colors.GREEN, f"   ✅ {addon['addonName']} installed successfully")
+                    self.log_operation('INFO', f"Add-on {addon['addonName']} installed successfully for {cluster_name}")
+                    
+                except Exception as e:
+                    failed_addons.append(addon['addonName'])
+                    self.log_operation('WARNING', f"Failed to install {addon['addonName']}: {str(e)}")
+                    self.print_colored(Colors.YELLOW, f"   ⚠️  Failed to install {addon['addonName']}: {str(e)}")
+            
+            self.print_colored(Colors.GREEN, f"✅ Add-ons installation completed: {len(successful_addons)} successful, {len(failed_addons)} failed")
+            self.log_operation('INFO', f"Add-ons installation completed for {cluster_name}: {successful_addons}")
+            
+            return len(successful_addons) > 0
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to install add-ons for {cluster_name}: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Add-ons installation failed: {str(e)}")
+            return False
+
+    def enable_container_insights(self, cluster_name: str, region: str, admin_access_key: str, admin_secret_key: str) -> bool:
+        """Enable CloudWatch Container Insights for the cluster"""
+        try:
+            self.log_operation('INFO', f"Enabling CloudWatch Container Insights for cluster {cluster_name}")
+            self.print_colored(Colors.YELLOW, f"📊 Enabling CloudWatch Container Insights for {cluster_name}...")
+            
+            # Check if kubectl is available
+            import subprocess
+            import shutil
+            
+            kubectl_available = shutil.which('kubectl') is not None
+            
+            if not kubectl_available:
+                self.log_operation('WARNING', f"kubectl not found. Cannot deploy Container Insights for {cluster_name}")
+                self.print_colored(Colors.YELLOW, f"⚠️  kubectl not found. Container Insights deployment skipped.")
+                return False
+            
+            # Set environment variables for admin access
+            env = os.environ.copy()
+            env['AWS_ACCESS_KEY_ID'] = admin_access_key
+            env['AWS_SECRET_ACCESS_KEY'] = admin_secret_key
+            env['AWS_DEFAULT_REGION'] = region
+            
+            # Deploy using the one-liner command for Container Insights
+            self.print_colored(Colors.CYAN, "   🚀 Deploying CloudWatch Container Insights...")
+            
+            insights_url = "https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/quickstart/cwagent-fluentd-quickstart.yaml"
+            
+            # Download and apply the manifest
+            insights_cmd = [
+                'kubectl', 'apply', '-f', insights_url
+            ]
+            
+            insights_result = subprocess.run(insights_cmd, env=env, capture_output=True, text=True, timeout=180)
+            
+            if insights_result.returncode == 0:
+                self.print_colored(Colors.GREEN, "   ✅ CloudWatch Container Insights deployed")
+                self.log_operation('INFO', f"CloudWatch Container Insights deployed for {cluster_name}")
+                
+                # Wait for pods to be ready
+                self.print_colored(Colors.CYAN, "   ⏳ Waiting for Container Insights pods to be ready...")
+                time.sleep(30)
+                
+                # Verify deployment
+                verify_cmd = ['kubectl', 'get', 'pods', '-n', 'amazon-cloudwatch', '--no-headers']
+                verify_result = subprocess.run(verify_cmd, env=env, capture_output=True, text=True, timeout=60)
+                
+                if verify_result.returncode == 0:
+                    pod_lines = [line.strip() for line in verify_result.stdout.strip().split('\n') if line.strip()]
+                    running_pods = [line for line in pod_lines if 'Running' in line or 'Completed' in line]
+                    
+                    self.print_colored(Colors.GREEN, f"   ✅ Container Insights pods: {len(running_pods)} ready out of {len(pod_lines)} total")
+                    self.log_operation('INFO', f"Container Insights deployment verified: {len(running_pods)} pods ready")
+                    
+                    # Access information
+                    self.print_colored(Colors.CYAN, f"📊 Access Container Insights in AWS Console:")
+                    self.print_colored(Colors.CYAN, f"   CloudWatch → Insights → Container Insights")
+                    self.print_colored(Colors.CYAN, f"   Filter by cluster: {cluster_name}")
+                    
+                    return True
+                else:
+                    self.log_operation('WARNING', f"Could not verify Container Insights deployment")
+                    return True  # Still consider successful since deployment command worked
+            else:
+                self.log_operation('ERROR', f"Container Insights deployment failed: {insights_result.stderr}")
+                self.print_colored(Colors.RED, f"❌ Container Insights deployment failed")
+                return False
+                
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"Failed to enable Container Insights for {cluster_name}: {error_msg}")
+            self.print_colored(Colors.RED, f"❌ Container Insights deployment failed: {error_msg}")
+            return False
+
+    def setup_cluster_autoscaler(self, cluster_name: str, region: str, admin_access_key: str, admin_secret_key: str, account_id: str) -> bool:
+        """Setup cluster autoscaler for automatic node scaling"""
+        try:
+            self.log_operation('INFO', f"Setting up Cluster Autoscaler for cluster {cluster_name}")
+            self.print_colored(Colors.YELLOW, f"🔄 Setting up Cluster Autoscaler for {cluster_name}...")
+            
+            import subprocess
+            import shutil
+            import tempfile
+            
+            kubectl_available = shutil.which('kubectl') is not None
+            
+            if not kubectl_available:
+                self.log_operation('WARNING', f"kubectl not found. Cannot deploy Cluster Autoscaler for {cluster_name}")
+                self.print_colored(Colors.YELLOW, f"⚠️  kubectl not found. Cluster Autoscaler deployment skipped.")
+                return False
+            
+            # Set environment variables for admin access
+            env = os.environ.copy()
+            env['AWS_ACCESS_KEY_ID'] = admin_access_key
+            env['AWS_SECRET_ACCESS_KEY'] = admin_secret_key
+            env['AWS_DEFAULT_REGION'] = region
+            
+            # Step 1: Create IAM policy for cluster autoscaler
+            self.print_colored(Colors.CYAN, "   🔐 Setting up IAM permissions for Cluster Autoscaler...")
+            
+            admin_session = boto3.Session(
+                aws_access_key_id=admin_access_key,
+                aws_secret_access_key=admin_secret_key,
+                region_name=region
+            )
+            
+            iam_client = admin_session.client('iam')
+            
+            # Create policy for cluster autoscaler
+            autoscaler_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "autoscaling:DescribeAutoScalingGroups",
+                            "autoscaling:DescribeAutoScalingInstances",
+                            "autoscaling:DescribeLaunchConfigurations",
+                            "autoscaling:DescribeTags",
+                            "autoscaling:SetDesiredCapacity",
+                            "autoscaling:TerminateInstanceInAutoScalingGroup",
+                            "ec2:DescribeLaunchTemplateVersions"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+            
+            policy_name = f"ClusterAutoscalerPolicy-{cluster_name}"
+            
+            try:
+                # Create the policy
+                policy_response = iam_client.create_policy(
+                    PolicyName=policy_name,
+                    PolicyDocument=json.dumps(autoscaler_policy),
+                    Description=f"Policy for Cluster Autoscaler on {cluster_name}"
+                )
+                policy_arn = policy_response['Policy']['Arn']
+                self.log_operation('INFO', f"Created Cluster Autoscaler policy: {policy_arn}")
+                
+            except iam_client.exceptions.EntityAlreadyExistsException:
+                # Policy already exists, get its ARN
+                policy_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
+                self.log_operation('INFO', f"Using existing Cluster Autoscaler policy: {policy_arn}")
+            
+            # Attach policy to node instance role
+            try:
+                iam_client.attach_role_policy(
+                    RoleName="NodeInstanceRole",
+                    PolicyArn=policy_arn
+                )
+                self.print_colored(Colors.GREEN, "   ✅ IAM permissions configured")
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to attach autoscaler policy: {str(e)}")
+            
+            # Step 2: Deploy Cluster Autoscaler
+            self.print_colored(Colors.CYAN, "   🚀 Deploying Cluster Autoscaler...")
+            
+            autoscaler_yaml = f"""
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+    name: cluster-autoscaler
+    namespace: kube-system
+    labels:
+        app: cluster-autoscaler
+    spec:
+    selector:
+        matchLabels:
+        app: cluster-autoscaler
+    template:
+        metadata:
+        labels:
+            app: cluster-autoscaler
+        annotations:
+            prometheus.io/scrape: 'true'
+            prometheus.io/port: '8085'
+        spec:
+        priorityClassName: system-cluster-critical
+        securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+        serviceAccountName: cluster-autoscaler
+        containers:
+        - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.28.2
+            name: cluster-autoscaler
+            resources:
+            limits:
+                cpu: 100m
+                memory: 600Mi
+            requests:
+                cpu: 100m
+                memory: 600Mi
+            command:
+            - ./cluster-autoscaler
+            - --v=4
+            - --stderrthreshold=info
+            - --cloud-provider=aws
+            - --skip-nodes-with-local-storage=false
+            - --expander=least-waste
+            - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/{cluster_name}
+            - --balance-similar-node-groups
+            - --skip-nodes-with-system-pods=false
+            env:
+            - name: AWS_REGION
+            value: {region}
+            volumeMounts:
+            - name: ssl-certs
+            mountPath: /etc/ssl/certs/ca-certificates.crt
+            readOnly: true
+            imagePullPolicy: "Always"
+        volumes:
+        - name: ssl-certs
+            hostPath:
+            path: "/etc/ssl/certs/ca-bundle.crt"
+        nodeSelector:
+            kubernetes.io/os: linux
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+    labels:
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+    name: cluster-autoscaler
+    namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+    name: cluster-autoscaler
+    labels:
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+    rules:
+    - apiGroups: [""]
+    resources: ["events", "endpoints"]
+    verbs: ["create", "patch"]
+    - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+    - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["update"]
+    - apiGroups: [""]
+    resources: ["endpoints"]
+    resourceNames: ["cluster-autoscaler"]
+    verbs: ["get", "update"]
+    - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["watch", "list", "get", "update"]
+    - apiGroups: [""]
+    resources: ["namespaces", "pods", "services", "replicationcontrollers", "persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["watch", "list", "get"]
+    - apiGroups: ["extensions"]
+    resources: ["replicasets", "daemonsets"]
+    verbs: ["watch", "list", "get"]
+    - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["watch", "list"]
+    - apiGroups: ["apps"]
+    resources: ["statefulsets", "replicasets", "daemonsets"]
+    verbs: ["watch", "list", "get"]
+    - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
+    verbs: ["watch", "list", "get"]
+    - apiGroups: ["batch", "extensions"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "patch"]
+    - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+    - apiGroups: ["coordination.k8s.io"]
+    resourceNames: ["cluster-autoscaler"]
+    resources: ["leases"]
+    verbs: ["get", "update"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+    name: cluster-autoscaler
+    namespace: kube-system
+    labels:
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+    rules:
+    - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create","list","watch"]
+    - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-autoscaler-status", "cluster-autoscaler-priority-expander"]
+    verbs: ["delete", "get", "update", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+    name: cluster-autoscaler
+    labels:
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+    roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: cluster-autoscaler
+    subjects:
+    - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+    name: cluster-autoscaler
+    namespace: kube-system
+    labels:
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+    roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: cluster-autoscaler
+    subjects:
+    - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+    """
+            
+            # Create temporary file for autoscaler manifest
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(autoscaler_yaml)
+                autoscaler_file = f.name
+            
+            try:
+                # Apply autoscaler manifest
+                autoscaler_cmd = ['kubectl', 'apply', '-f', autoscaler_file]
+                autoscaler_result = subprocess.run(autoscaler_cmd, env=env, capture_output=True, text=True, timeout=120)
+                
+                if autoscaler_result.returncode == 0:
+                    self.print_colored(Colors.GREEN, "   ✅ Cluster Autoscaler deployed")
+                    self.log_operation('INFO', f"Cluster Autoscaler deployed for {cluster_name}")
+                    
+                    # Verify deployment
+                    time.sleep(10)
+                    verify_cmd = ['kubectl', 'get', 'pods', '-n', 'kube-system', '-l', 'app=cluster-autoscaler', '--no-headers']
+                    verify_result = subprocess.run(verify_cmd, env=env, capture_output=True, text=True, timeout=60)
+                    
+                    if verify_result.returncode == 0:
+                        pod_lines = [line.strip() for line in verify_result.stdout.strip().split('\n') if line.strip()]
+                        running_pods = [line for line in pod_lines if 'Running' in line]
+                        
+                        self.print_colored(Colors.GREEN, f"   ✅ Cluster Autoscaler pods: {len(running_pods)} running")
+                        self.log_operation('INFO', f"Cluster Autoscaler verification: {len(running_pods)} pods running")
+                        
+                        return True
+                    else:
+                        self.log_operation('WARNING', f"Could not verify Cluster Autoscaler deployment")
+                        return True
+                else:
+                    self.log_operation('ERROR', f"Cluster Autoscaler deployment failed: {autoscaler_result.stderr}")
+                    self.print_colored(Colors.RED, f"❌ Cluster Autoscaler deployment failed")
+                    return False
+                    
+            finally:
+                # Clean up autoscaler file
+                try:
+                    os.unlink(autoscaler_file)
+                except:
+                    pass
+                
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"Failed to setup Cluster Autoscaler for {cluster_name}: {error_msg}")
+            self.print_colored(Colors.RED, f"❌ Cluster Autoscaler setup failed: {error_msg}")
+            return False
+
+
+    def setup_scheduled_scaling(self, cluster_name: str, region: str, admin_access_key: str, admin_secret_key: str) -> bool:
+        """Setup scheduled scaling for cost optimization using IST times"""
+        try:
+            self.log_operation('INFO', f"Setting up scheduled scaling for cluster {cluster_name}")
+            self.print_colored(Colors.YELLOW, f"⏰ Setting up scheduled scaling for {cluster_name}...")
+            
+            # Create admin session
+            admin_session = boto3.Session(
+                aws_access_key_id=admin_access_key,
+                aws_secret_access_key=admin_secret_key,
+                region_name=region
+            )
+            
+            # Create EventBridge and Lambda clients
+            events_client = admin_session.client('events')
+            lambda_client = admin_session.client('lambda')
+            iam_client = admin_session.client('iam')
+            sts_client = admin_session.client('sts')
+            account_id = sts_client.get_caller_identity()['Account']
+            
+            # Step 1: Create IAM role for Lambda function
+            self.print_colored(Colors.CYAN, "   🔐 Creating IAM role for scheduled scaling...")
+            
+            lambda_role_name = f"EKSScheduledScalingRole-{cluster_name}"
+            
+            lambda_trust_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": "lambda.amazonaws.com"
+                        },
+                        "Action": "sts:AssumeRole"
+                    }
+                ]
+            }
+            
+            lambda_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "eks:DescribeCluster",
+                            "eks:DescribeNodegroup",
+                            "eks:UpdateNodegroupConfig",
+                            "logs:CreateLogGroup",
+                            "logs:CreateLogStream",
+                            "logs:PutLogEvents"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+            
+            try:
+                # Create Lambda execution role
+                role_response = iam_client.create_role(
+                    RoleName=lambda_role_name,
+                    AssumeRolePolicyDocument=json.dumps(lambda_trust_policy),
+                    Description=f"Role for scheduled scaling of EKS cluster {cluster_name}"
+                )
+                lambda_role_arn = role_response['Role']['Arn']
+                
+                # Create and attach policy
+                policy_name = f"EKSScheduledScalingPolicy-{cluster_name}"
+                policy_response = iam_client.create_policy(
+                    PolicyName=policy_name,
+                    PolicyDocument=json.dumps(lambda_policy),
+                    Description=f"Policy for scheduled scaling of EKS cluster {cluster_name}"
+                )
+                
+                iam_client.attach_role_policy(
+                    RoleName=lambda_role_name,
+                    PolicyArn=policy_response['Policy']['Arn']
+                )
+                
+                self.log_operation('INFO', f"Created Lambda role for scheduled scaling: {lambda_role_arn}")
+                
+            except iam_client.exceptions.EntityAlreadyExistsException:
+                # Role already exists
+                role_response = iam_client.get_role(RoleName=lambda_role_name)
+                lambda_role_arn = role_response['Role']['Arn']
+                self.log_operation('INFO', f"Using existing Lambda role: {lambda_role_arn}")
+            
+            # Step 2: Create Lambda function for scaling
+            self.print_colored(Colors.CYAN, "   🔧 Creating Lambda function for scaling...")
+            
+            lambda_code = f'''
+    import boto3
+    import json
+    import logging
+    from datetime import datetime
+    import pytz
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    def lambda_handler(event, context):
+        try:
+            eks_client = boto3.client('eks', region_name='{region}')
+            
+            cluster_name = '{cluster_name}'
+            nodegroup_name = f'{{cluster_name}}-nodegroup'
+            
+            # Get the desired size from the event
+            desired_size = event.get('desired_size', 1)
+            min_size = event.get('min_size', 0)
+            max_size = event.get('max_size', 3)
+            
+            # Log IST time for reference
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            ist_time = datetime.now(ist_tz).strftime('%Y-%m-%d %H:%M:%S IST')
+            
+            logger.info(f"Scaling nodegroup {{nodegroup_name}} to desired={{desired_size}}, min={{min_size}}, max={{max_size}} at {{ist_time}}")
+            
+            # Update nodegroup scaling configuration
+            response = eks_client.update_nodegroup_config(
+                clusterName=cluster_name,
+                nodegroupName=nodegroup_name,
+                scalingConfig={{
+                    'minSize': min_size,
+                    'maxSize': max_size,
+                    'desiredSize': desired_size
+                }}
+            )
+            
+            logger.info(f"Scaling update initiated: {{response['update']['id']}} at {{ist_time}}")
+            
+            return {{
+                'statusCode': 200,
+                'body': json.dumps({{
+                    'message': f'Scaling update initiated for {{nodegroup_name}} at {{ist_time}}',
+                    'update_id': response['update']['id'],
+                    'ist_time': ist_time
+                }})
+            }}
+            
+        except Exception as e:
+            logger.error(f"Error scaling nodegroup: {{str(e)}}")
+            return {{
+                'statusCode': 500,
+                'body': json.dumps({{
+                    'error': str(e)
+                }})
+            }}
+    '''
+            
+            function_name = f"eks-scheduled-scaling-{cluster_name}"
+            
+            try:
+                # Wait for role to be available
+                time.sleep(10)
+                
+                # Create Lambda function
+                lambda_response = lambda_client.create_function(
+                    FunctionName=function_name,
+                    Runtime='python3.9',
+                    Role=lambda_role_arn,
+                    Handler='index.lambda_handler',
+                    Code={'ZipFile': lambda_code.encode('utf-8')},
+                    Description=f'Scheduled scaling for EKS cluster {cluster_name} (IST timezone)',
+                    Timeout=60,
+                    Layers=[
+                        'arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p39-pytz:1'  # pytz layer
+                    ]
+                )
+                
+                function_arn = lambda_response['FunctionArn']
+                self.log_operation('INFO', f"Created Lambda function: {function_arn}")
+                
+            except lambda_client.exceptions.ResourceConflictException:
+                # Function already exists
+                function_response = lambda_client.get_function(FunctionName=function_name)
+                function_arn = function_response['Configuration']['FunctionArn']
+                self.log_operation('INFO', f"Using existing Lambda function: {function_arn}")
+            
+            # Step 3: Create EventBridge rules for scaling
+            self.print_colored(Colors.CYAN, "   📅 Creating scheduled scaling rules (IST timezone)...")
+            
+            # IST is UTC+5:30
+            # Scale down at 6:30 PM IST = 1:00 PM UTC (13:00 UTC)
+            # Scale up at 8:30 AM IST = 3:00 AM UTC (03:00 UTC)
+            
+            # Scale down at 6:30 PM IST (1:00 PM UTC)
+            scale_down_rule = f"eks-scale-down-{cluster_name}"
+            events_client.put_rule(
+                Name=scale_down_rule,
+                ScheduleExpression='cron(0 3 * * * *)',  # 1:00 PM UTC + 5.30 = 6:30 PM IST, All Days
+                # for weekdays only 'cron(0 13 * * MON-FRI *)' 
+                Description=f'Scale down EKS cluster {cluster_name} at 6:30 PM IST (after hours)',
+                State='ENABLED'
+            )
+            
+            # Scale up at 8:30 AM IST (3:00 AM UTC)
+            scale_up_rule = f"eks-scale-up-{cluster_name}"
+            events_client.put_rule(
+                Name=scale_up_rule,
+                ScheduleExpression='cron(0 13 * * * *)',  # 3:00 AM UTC + 5.30 = 8:30 AM IST, All Days
+                # for weekdays only 'cron(0 13 * * MON-FRI *)' 
+                Description=f'Scale up EKS cluster {cluster_name} at 8:30 AM IST (business hours)',
+                State='ENABLED'
+            )
+            
+            # Add Lambda permissions for EventBridge
+            try:
+                lambda_client.add_permission(
+                    FunctionName=function_name,
+                    StatementId=f'allow-eventbridge-{cluster_name}-down',
+                    Action='lambda:InvokeFunction',
+                    Principal='events.amazonaws.com',
+                    SourceArn=f'arn:aws:events:{region}:{account_id}:rule/{scale_down_rule}'
+                )
+                
+                lambda_client.add_permission(
+                    FunctionName=function_name,
+                    StatementId=f'allow-eventbridge-{cluster_name}-up',
+                    Action='lambda:InvokeFunction',
+                    Principal='events.amazonaws.com',
+                    SourceArn=f'arn:aws:events:{region}:{account_id}:rule/{scale_up_rule}'
+                )
+            except lambda_client.exceptions.ResourceConflictException:
+                # Permissions already exist
+                pass
+            
+            # Add targets to rules
+            events_client.put_targets(
+                Rule=scale_down_rule,
+                Targets=[
+                    {
+                        'Id': '1',
+                        'Arn': function_arn,
+                        'Input': json.dumps({
+                            'desired_size': 0,
+                            'min_size': 0,
+                            'max_size': 3,
+                            'action': 'scale_down',
+                            'ist_time': '6:30 PM IST'
+                        })
+                    }
+                ]
+            )
+            
+            events_client.put_targets(
+                Rule=scale_up_rule,
+                Targets=[
+                    {
+                        'Id': '1',
+                        'Arn': function_arn,
+                        'Input': json.dumps({
+                            'desired_size': 1,
+                            'min_size': 1,
+                            'max_size': 3,
+                            'action': 'scale_up',
+                            'ist_time': '8:30 AM IST'
+                        })
+                    }
+                ]
+            )
+            
+            self.print_colored(Colors.GREEN, "   ✅ Scheduled scaling configured for IST timezone")
+            self.print_colored(Colors.CYAN, f"   📅 Scale up: 8:30 AM IST (Mon-Fri) → 1 node")
+            self.print_colored(Colors.CYAN, f"   📅 Scale down: 6:30 PM IST (Mon-Fri) → 0 nodes")
+            self.print_colored(Colors.CYAN, f"   🌏 Timezone: Indian Standard Time (UTC+5:30)")
+            
+            self.log_operation('INFO', f"Scheduled scaling configured for {cluster_name} with IST timezone")
+            self.log_operation('INFO', f"Scale up: 8:30 AM IST (3:00 AM UTC), Scale down: 6:30 PM IST (1:00 PM UTC)")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"Failed to setup scheduled scaling for {cluster_name}: {error_msg}")
+            self.print_colored(Colors.RED, f"❌ Scheduled scaling setup failed: {error_msg}")
+            return False
+    
     def create_single_cluster(self, cluster_info: Dict) -> bool:
         """Create a single EKS cluster using admin credentials with user-selected instance type and 1 default node"""
         user = cluster_info['user']
@@ -1272,7 +2030,7 @@ class EKSClusterManager:
         account_key = cluster_info['account_key']
         max_nodes = cluster_info['max_nodes']
         username = user['username']
-        instance_type = cluster_info.get('instance_type', 'c6a.large')  # Get from cluster_info
+        instance_type = cluster_info.get('instance_type', 'c6a.large')
         
         try:
             self.log_operation('INFO', f"Starting cluster creation: {cluster_name} in {region} with {instance_type}")
@@ -1304,20 +2062,28 @@ class EKSClusterManager:
             subnet_ids, security_group_id = self.get_or_create_vpc_resources(ec2_client, region)
             self.log_operation('INFO', f"VPC resources verified for {account_key} in {region}")
             
-            # Step 1: Create EKS cluster
-            self.log_operation('INFO', f"Creating EKS cluster {cluster_name}")
+            # Step 1: Create EKS cluster with CloudWatch logging enabled (Updated to 1.28)
+            self.log_operation('INFO', f"Creating EKS cluster {cluster_name} with CloudWatch logging and version 1.28")
             cluster_config = {
                 'name': cluster_name,
-                'version': '1.27',
+                'version': '1.28',  # Updated version
                 'roleArn': eks_role_arn,
                 'resourcesVpcConfig': {
                     'subnetIds': subnet_ids,
                     'securityGroupIds': [security_group_id]
+                },
+                'logging': {
+                    'clusterLogging': [
+                        {
+                            'types': ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler'],
+                            'enabled': True
+                        }
+                    ]
                 }
             }
             
             eks_client.create_cluster(**cluster_config)
-            self.log_operation('INFO', f"EKS cluster {cluster_name} creation initiated")
+            self.log_operation('INFO', f"EKS cluster {cluster_name} creation initiated with version 1.28")
             
             # Wait for cluster to be active
             self.log_operation('INFO', f"Waiting for cluster {cluster_name} to be active...")
@@ -1327,11 +2093,18 @@ class EKSClusterManager:
             
             self.log_operation('INFO', f"Cluster {cluster_name} is now active")
             
-            # Step 2: Create node group with selected instance type and 1 default node
+            # Install essential add-ons
+            self.print_colored(Colors.BLUE, f"🔧 Installing essential add-ons...")
+            addons_success = self.install_essential_addons(eks_client, cluster_name)
+            
+            # Step 2: Create node group with AL2023 AMI and diversified instance types
             self.log_operation('INFO', f"Creating node group for cluster {cluster_name} with {instance_type} instances")
             nodegroup_name = self.generate_nodegroup_name(cluster_name)
             
-            # Use the selected instance type
+            # Get diversified instance types for better spot availability
+            instance_types = self.get_diversified_instance_types(instance_type)
+            
+            # Use AL2023 AMI and diversified instance types
             nodegroup_config = {
                 'clusterName': cluster_name,
                 'nodegroupName': nodegroup_name,
@@ -1340,8 +2113,8 @@ class EKSClusterManager:
                     'maxSize': max_nodes,
                     'desiredSize': 1
                 },
-                'instanceTypes': [instance_type],
-                'amiType': 'AL2_x86_64',
+                'instanceTypes': instance_types,  # Multiple types for better availability
+                'amiType': 'AL2023_x86_64_STANDARD',  # Updated AMI type
                 'diskSize': 20,
                 'nodeRole': node_role_arn,
                 'subnets': subnet_ids,
@@ -1349,10 +2122,10 @@ class EKSClusterManager:
             }
             
             # Log the exact configuration being used
-            self.log_operation('INFO', f"Creating nodegroup with config: instanceTypes={nodegroup_config['instanceTypes']}, capacityType={nodegroup_config.get('capacityType', 'default')}")
+            self.log_operation('INFO', f"Creating nodegroup with config: instanceTypes={nodegroup_config['instanceTypes']}, amiType={nodegroup_config['amiType']}, capacityType={nodegroup_config.get('capacityType', 'default')}")
             
             eks_client.create_nodegroup(**nodegroup_config)
-            self.log_operation('INFO', f"Node group {nodegroup_name} creation initiated with {instance_type} instances")
+            self.log_operation('INFO', f"Node group {nodegroup_name} creation initiated with AL2023 AMI and diversified instance types")
             
             # Wait for node group to be active
             self.log_operation('INFO', f"Waiting for node group {nodegroup_name} to be active...")
@@ -1364,7 +2137,7 @@ class EKSClusterManager:
                 WaiterConfig={'Delay': 30, 'MaxAttempts': 40}
             )
             
-            self.log_operation('INFO', f"Node group {nodegroup_name} is now active with 1 {instance_type} node")
+            self.log_operation('INFO', f"Node group {nodegroup_name} is now active with AL2023 AMI")
             
             # Verify the actual instance type created
             try:
@@ -1373,15 +2146,16 @@ class EKSClusterManager:
                     nodegroupName=nodegroup_name
                 )
                 actual_instance_types = nodegroup_details['nodegroup'].get('instanceTypes', [])
-                self.log_operation('INFO', f"Verified nodegroup instance types: {actual_instance_types}")
+                actual_ami_type = nodegroup_details['nodegroup'].get('amiType', 'Unknown')
+                self.log_operation('INFO', f"Verified nodegroup - instanceTypes: {actual_instance_types}, amiType: {actual_ami_type}")
                 
                 if instance_type not in actual_instance_types:
                     self.log_operation('WARNING', f"Expected {instance_type} but got: {actual_instance_types}")
                 else:
-                    self.log_operation('INFO', f"Successfully created nodegroup with {instance_type} instances")
+                    self.log_operation('INFO', f"Successfully created nodegroup with diversified instance types including {instance_type}")
                     
             except Exception as e:
-                self.log_operation('WARNING', f"Could not verify nodegroup instance types: {str(e)}")
+                self.log_operation('WARNING', f"Could not verify nodegroup details: {str(e)}")
             
             # Step 3: Configure aws-auth ConfigMap for user access
             self.log_operation('INFO', f"Configuring user access for {username}")
@@ -1425,15 +2199,59 @@ class EKSClusterManager:
             else:
                 self.log_operation('WARNING', f"Skipping verification due to ConfigMap configuration failure")
 
+            # Step 5: Enable Container Insights
+            if verification_success or auth_success:
+                self.print_colored(Colors.BLUE, f"\n📊 Setting up CloudWatch Container Insights...")
+                
+                insights_success = self.enable_container_insights(
+                    cluster_name, 
+                    region, 
+                    admin_access_key, 
+                    admin_secret_key
+                )
+                
+                if insights_success:
+                    cluster_info['container_insights_enabled'] = True
+                    self.log_operation('INFO', f"Container Insights enabled for {cluster_name}")
+                else:
+                    cluster_info['container_insights_enabled'] = False
+            else:
+                cluster_info['container_insights_enabled'] = False
+            
+            # Step 6: Setup Cluster Autoscaler
+            self.print_colored(Colors.BLUE, f"\n🔄 Setting up Cluster Autoscaler...")
+            autoscaler_success = self.setup_cluster_autoscaler(
+                cluster_name, 
+                region, 
+                admin_access_key, 
+                admin_secret_key,
+                account_id
+            )
+            cluster_info['autoscaler_enabled'] = autoscaler_success
+            
+            # Step 7: Setup Scheduled Scaling
+            self.print_colored(Colors.BLUE, f"\n⏰ Setting up Scheduled Scaling...")
+            scheduling_success = self.setup_scheduled_scaling(
+                cluster_name, 
+                region, 
+                admin_access_key, 
+                admin_secret_key
+            )
+            cluster_info['scheduled_scaling_enabled'] = scheduling_success
+
             # Update cluster_info with verification results
             cluster_info['auth_configured'] = auth_success
             cluster_info['access_verified'] = verification_success
+            cluster_info['addons_installed'] = addons_success
+            cluster_info['version'] = '1.28'
+            cluster_info['ami_type'] = 'AL2023_x86_64_STANDARD'
+            cluster_info['diversified_instance_types'] = instance_types
             
             # Generate kubectl commands for the user
             user_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name} --profile {username}"
             admin_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name}"
             
-            self.kubectl_commands.append({
+            kubectl_info = {
                 'cluster_name': cluster_name,
                 'region': region,
                 'user_command': user_kubectl_cmd,
@@ -1445,12 +2263,37 @@ class EKSClusterManager:
                 'access_verified': verification_success,
                 'user_access_key': user.get('access_key_id', ''),
                 'user_secret_key': user.get('secret_access_key', ''),
-                'instance_type': instance_type,  # Store the selected instance type
-                'default_nodes': 1
-            })
-            self.log_operation('INFO', f"Generated kubectl commands for {username}")                
-            self.log_operation('INFO', f"Successfully created cluster {cluster_name} with {instance_type} instances")
-            self.print_colored(Colors.GREEN, f"✅ Successfully created cluster: {cluster_name} ({instance_type}, 1 node)")
+                'instance_type': instance_type,
+                'instance_types': instance_types,  # All instance types used
+                'default_nodes': 1,
+                'version': '1.28',
+                'ami_type': 'AL2023_x86_64_STANDARD',
+                'container_insights_enabled': cluster_info.get('container_insights_enabled', False),
+                'autoscaler_enabled': cluster_info.get('autoscaler_enabled', False),
+                'scheduled_scaling_enabled': cluster_info.get('scheduled_scaling_enabled', False),
+                'addons_installed': addons_success
+            }
+            
+            self.kubectl_commands.append(kubectl_info)
+            self.log_operation('INFO', f"Generated kubectl commands for {username}")
+            
+            # *** PRESERVED: Generate individual user instruction file immediately ***
+            self.generate_individual_user_instruction(cluster_info, kubectl_info)
+            
+            # Print comprehensive success summary
+            self.print_colored(Colors.GREEN, f"🎉 Cluster Creation Summary for {cluster_name}:")
+            self.print_colored(Colors.GREEN, f"   ✅ EKS Version: 1.28")
+            self.print_colored(Colors.GREEN, f"   ✅ AMI Type: AL2023_x86_64_STANDARD")
+            self.print_colored(Colors.GREEN, f"   ✅ Instance Types: {', '.join(instance_types)}")
+            self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Logging: Enabled")
+            self.print_colored(Colors.GREEN, f"   ✅ Essential Add-ons: {'Installed' if addons_success else 'Failed'}")
+            self.print_colored(Colors.GREEN, f"   ✅ Container Insights: {'Enabled' if cluster_info.get('container_insights_enabled') else 'Failed'}")
+            self.print_colored(Colors.GREEN, f"   ✅ Cluster Autoscaler: {'Enabled' if cluster_info.get('autoscaler_enabled') else 'Failed'}")
+            self.print_colored(Colors.GREEN, f"   ✅ Scheduled Scaling: {'Enabled' if cluster_info.get('scheduled_scaling_enabled') else 'Failed'}")
+            self.print_colored(Colors.GREEN, f"   ✅ User Access: {'Configured' if auth_success else 'Failed'}")
+            
+            self.log_operation('INFO', f"Successfully created enhanced cluster {cluster_name} with all features")
+            self.print_colored(Colors.GREEN, f"✅ Successfully created enhanced cluster: {cluster_name} (v1.28, AL2023, diversified instances)")
             return True
             
         except Exception as e:
@@ -1458,7 +2301,7 @@ class EKSClusterManager:
             self.log_operation('ERROR', f"Failed to create cluster {cluster_name}: {error_msg}")
             self.print_colored(Colors.RED, f"❌ Failed to create cluster {cluster_name}: {error_msg}")
             return False
-
+        
     def run(self) -> None:
         """Main execution flow"""
         try:
@@ -1719,7 +2562,7 @@ class EKSClusterManager:
                 "max_nodes": cluster_info['max_nodes'],
                 "instance_type": instance_type,  # Use selected instance type
                 "default_nodes": 1,
-                "ami_type": "AL2_x86_64",
+                "ami_type": "AL2023_x86_64_STANDARD", #"AL2_x86_64"
                 "disk_size": 20,
                 "capacity_type": capacity_type.upper(),  # Use selected capacity type
                 "user_credentials": {
@@ -1942,38 +2785,39 @@ class EKSClusterManager:
             self.print_colored(Colors.RED, f"   ❌ Verification failed: {str(e)}")
             return False
     
-    
-    def generate_user_instructions(self) -> None:
-        """Generate user-specific instruction files"""
-        if not self.kubectl_commands:
-            return
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create individual instruction files for each user
-        for cmd_info in self.kubectl_commands:
-            user_file = f"user_instructions_{cmd_info['user']}_{timestamp}.txt"
+    def generate_individual_user_instruction(self, cluster_info: Dict, kubectl_info: Dict) -> None:
+        """Generate user-specific instruction file immediately after cluster creation"""
+        try:
+            user = cluster_info['user']
+            username = user['username']
+            cluster_name = cluster_info['cluster_name']
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            user_file = f"user_instructions_{username}_{cluster_name}_{timestamp}.txt"
             
             with open(user_file, 'w') as f:
-                f.write(f"# EKS Cluster Access Instructions for {cmd_info['user']}\n")
+                f.write(f"# EKS Cluster Access Instructions for {username}\n")
                 f.write(f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
-                f.write(f"# Cluster: {cmd_info['cluster_name']}\n")
-                f.write(f"# Region: {cmd_info['region']}\n")
-                f.write(f"# Instance Type: {cmd_info['instance_type']}\n")
-                f.write(f"# Default Nodes: {cmd_info['default_nodes']}\n")
-                f.write(f"# Max Nodes: {cmd_info['max_nodes']}\n\n")
+                f.write(f"# Cluster: {cluster_name}\n")
+                f.write(f"# Region: {kubectl_info['region']}\n")
+                f.write(f"# Instance Type: {kubectl_info['instance_type']}\n")
+                f.write(f"# Default Nodes: {kubectl_info['default_nodes']}\n")
+                f.write(f"# Max Nodes: {kubectl_info['max_nodes']}\n")
+                f.write(f"# Account: {kubectl_info['account']}\n")
+                f.write(f"# Auth Configured: {kubectl_info['auth_configured']}\n")
+                f.write(f"# Access Verified: {kubectl_info['access_verified']}\n\n")
                 
                 f.write("## Prerequisites\n")
                 f.write("1. Install AWS CLI: https://aws.amazon.com/cli/\n")
                 f.write("2. Install kubectl: https://kubernetes.io/docs/tasks/tools/\n\n")
                 
                 f.write("## AWS Configuration\n")
-                f.write(f"aws configure set aws_access_key_id {cmd_info['user_access_key']} --profile {cmd_info['user']}\n")
-                f.write(f"aws configure set aws_secret_access_key {cmd_info['user_secret_key']} --profile {cmd_info['user']}\n")
-                f.write(f"aws configure set region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                f.write(f"aws configure set aws_access_key_id {kubectl_info['user_access_key']} --profile {username}\n")
+                f.write(f"aws configure set aws_secret_access_key {kubectl_info['user_secret_key']} --profile {username}\n")
+                f.write(f"aws configure set region {kubectl_info['region']} --profile {username}\n\n")
                 
                 f.write("## Cluster Access\n")
-                f.write(f"{cmd_info['user_command']}\n\n")
+                f.write(f"{kubectl_info['user_command']}\n\n")
                 
                 f.write("## Test Commands\n")
                 f.write("kubectl get nodes\n")
@@ -1981,14 +2825,120 @@ class EKSClusterManager:
                 f.write("kubectl cluster-info\n\n")
                 
                 f.write("## Cluster Details\n")
-                f.write(f"- Instance Type: {cmd_info['instance_type']} (compute optimized)\n")
-                f.write(f"- Default Nodes: {cmd_info['default_nodes']}\n")
-                f.write(f"- Maximum Scalable Nodes: {cmd_info['max_nodes']}\n\n")
+                f.write(f"- Instance Type: {kubectl_info['instance_type']} (selected during creation)\n")
+                f.write(f"- Default Nodes: {kubectl_info['default_nodes']}\n")
+                f.write(f"- Maximum Scalable Nodes: {kubectl_info['max_nodes']}\n")
+                f.write(f"- Capacity Type: {cluster_info.get('capacity_type', 'SPOT')}\n\n")
                 
                 f.write("## Scaling Example\n")
-                f.write(f"aws eks update-nodegroup-config --cluster-name {cmd_info['cluster_name']} --nodegroup-name {cmd_info['cluster_name']}-nodegroup --scaling-config minSize=1,maxSize={cmd_info['max_nodes']},desiredSize=2 --region {cmd_info['region']} --profile {cmd_info['user']}\n")
+                f.write(f"# Scale up the node group\n")
+                f.write(f"aws eks update-nodegroup-config --cluster-name {cluster_name} --nodegroup-name {cluster_name}-nodegroup --scaling-config minSize=1,maxSize={kubectl_info['max_nodes']},desiredSize=2 --region {kubectl_info['region']}\n\n")
+                
+                f.write("## Troubleshooting\n")
+                f.write("# If you get authentication errors:\n")
+                f.write("# 1. Verify your AWS credentials are correct\n")
+                f.write("# 2. Ensure your user has been granted access to the cluster\n")
+                f.write("# 3. Try updating the kubeconfig again\n")
+                f.write(f"# 4. Contact administrator if issues persist\n\n")
+                
+                f.write("## Additional Resources\n")
+                f.write("- EKS User Guide: https://docs.aws.amazon.com/eks/latest/userguide/\n")
+                f.write("- kubectl Cheat Sheet: https://kubernetes.io/docs/reference/kubectl/cheatsheet/\n")
+            
+            self.log_operation('INFO', f"Individual user instruction file created: {user_file}")
+            self.print_colored(Colors.CYAN, f"📄 User instructions saved: {user_file}")
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create user instruction file for {username}: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create user instruction file: {str(e)}")
     
-
+    def generate_user_instructions(self) -> None:
+        """Generate user-specific instruction files in eks/user_login directory"""
+        if not self.kubectl_commands:
+            return
+        
+        # Create directory structure if it doesn't exist
+        base_dir = "eks"
+        user_login_dir = os.path.join(base_dir, "user_login")
+        
+        try:
+            if not os.path.exists(base_dir):
+                os.makedirs(base_dir, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {base_dir}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {base_dir}")
+            
+            if not os.path.exists(user_login_dir):
+                os.makedirs(user_login_dir, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {user_login_dir}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {user_login_dir}")
+                
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create directories: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create directories: {str(e)}")
+            # Fallback to current directory
+            user_login_dir = "."
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create individual instruction files for each user
+        for cmd_info in self.kubectl_commands:
+            user_file = os.path.join(user_login_dir, f"user_instructions_{cmd_info['user']}_{timestamp}.txt")
+            
+            try:
+                with open(user_file, 'w') as f:
+                    f.write(f"# EKS Cluster Access Instructions for {cmd_info['user']}\n")
+                    f.write(f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+                    f.write(f"# Generated by: varadharajaan\n")
+                    f.write(f"# Cluster: {cmd_info['cluster_name']}\n")
+                    f.write(f"# Region: {cmd_info['region']}\n")
+                    f.write(f"# Instance Type: {cmd_info['instance_type']}\n")
+                    f.write(f"# Default Nodes: {cmd_info['default_nodes']}\n")
+                    f.write(f"# Max Nodes: {cmd_info['max_nodes']}\n\n")
+                    
+                    f.write("## Prerequisites\n")
+                    f.write("1. Install AWS CLI: https://aws.amazon.com/cli/\n")
+                    f.write("2. Install kubectl: https://kubernetes.io/docs/tasks/tools/\n\n")
+                    
+                    f.write("## AWS Configuration\n")
+                    f.write(f"aws configure set aws_access_key_id {cmd_info['user_access_key']} --profile {cmd_info['user']}\n")
+                    f.write(f"aws configure set aws_secret_access_key {cmd_info['user_secret_key']} --profile {cmd_info['user']}\n")
+                    f.write(f"aws configure set region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                    
+                    f.write("## Cluster Access\n")
+                    f.write(f"{cmd_info['user_command']}\n\n")
+                    
+                    f.write("## Test Commands\n")
+                    f.write("kubectl get nodes\n")
+                    f.write("kubectl get pods --all-namespaces\n")
+                    f.write("kubectl cluster-info\n\n")
+                    
+                    f.write("## Cluster Details\n")
+                    f.write(f"- Instance Type: {cmd_info['instance_type']} (compute optimized)\n")
+                    f.write(f"- Default Nodes: {cmd_info['default_nodes']}\n")
+                    f.write(f"- Maximum Scalable Nodes: {cmd_info['max_nodes']}\n\n")
+                    
+                    f.write("## Scaling Example\n")
+                    f.write(f"aws eks update-nodegroup-config --cluster-name {cmd_info['cluster_name']} --nodegroup-name {cmd_info['cluster_name']}-nodegroup --scaling-config minSize=1,maxSize={cmd_info['max_nodes']},desiredSize=2 --region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                    
+                    f.write("## Troubleshooting\n")
+                    f.write("# If you get authentication errors:\n")
+                    f.write("# 1. Verify your AWS credentials are correct\n")
+                    f.write("# 2. Ensure your user has been granted access to the cluster\n")
+                    f.write("# 3. Try updating the kubeconfig again\n")
+                    f.write("# 4. Contact administrator if issues persist\n\n")
+                    
+                    f.write("## Additional Resources\n")
+                    f.write("- EKS User Guide: https://docs.aws.amazon.com/eks/latest/userguide/\n")
+                    f.write("- kubectl Cheat Sheet: https://kubernetes.io/docs/reference/kubectl/cheatsheet/\n")
+                
+                self.log_operation('INFO', f"User instruction file created: {user_file}")
+                self.print_colored(Colors.CYAN, f"📄 User instructions saved: {user_file}")
+                
+            except Exception as e:
+                self.log_operation('ERROR', f"Failed to create user instruction file for {cmd_info['user']}: {str(e)}")
+                self.print_colored(Colors.RED, f"❌ Failed to create user instruction file for {cmd_info['user']}: {str(e)}")
+        
+        self.print_colored(Colors.GREEN, f"✅ Generated {len(self.kubectl_commands)} user instruction files in {user_login_dir}/")
 
 def main():
     """Main entry point"""

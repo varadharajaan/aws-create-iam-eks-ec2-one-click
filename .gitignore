@@ -115,3 +115,8 @@ file_organizer.log
 /aws/*
 cloud-nuke_windows_amd64.exe
 cloudnuke*
+aws_default_vpc_Check_report*
+aws_accounts_config*.json
+vpc_compliance_report_*.json
+vpc_recovery_report_*.json
+aws_vpc_autofix*.json

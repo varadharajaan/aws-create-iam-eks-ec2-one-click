@@ -59,9 +59,31 @@ class IAMUserManager:
             self.logger.info(f"User mapping loaded from: {self.mapping_file}")
             self.logger.info(f"Found mappings for {len(self.user_mappings)} users")
             
+            # Log account coverage
+            self.analyze_account_coverage()
+            
         except Exception as e:
             self.logger.warning(f"Error loading user mapping: {e}")
             self.user_mappings = {}
+
+    def analyze_account_coverage(self):
+        """Analyze which accounts have user mappings and which don't"""
+        accounts_with_mappings = set()
+        accounts_without_mappings = set(self.aws_accounts.keys())
+        
+        for username in self.user_mappings.keys():
+            # Extract account name from username (e.g., account01_clouduser01 -> account01)
+            account_name = '_'.join(username.split('_')[:-1])
+            if account_name in self.aws_accounts:
+                accounts_with_mappings.add(account_name)
+                accounts_without_mappings.discard(account_name)
+        
+        self.accounts_with_mappings = accounts_with_mappings
+        self.accounts_without_mappings = accounts_without_mappings
+        
+        self.logger.info(f"Accounts with user mappings: {sorted(accounts_with_mappings)}")
+        if accounts_without_mappings:
+            self.logger.warning(f"Accounts without user mappings: {sorted(accounts_without_mappings)}")
 
     def get_user_info(self, username):
         """Get real user information for a username"""
@@ -74,13 +96,8 @@ class IAMUserManager:
                 'full_name': f"{mapping['first_name']} {mapping['last_name']}"
             }
         else:
-            self.logger.warning(f"No mapping found for user: {username}")
-            return {
-                'first_name': 'Unknown',
-                'last_name': 'User',
-                'email': 'unknown@bakerhughes.com',
-                'full_name': 'Unknown User'
-            }
+            self.logger.error(f"No mapping found for user: {username}")
+            return None
 
     def create_iam_client(self, account_name):
         """Create IAM client using specific account credentials"""
@@ -126,20 +143,22 @@ class IAMUserManager:
                 raise e
 
     def get_users_for_account(self, account_name):
-        """Get user-region mapping for specific account, supporting per-account user count overrides."""
-        regions = self.user_settings['user_regions']
-        # Check for per-account override
-        if 'users_per_account' in self.aws_accounts[account_name]:
-            users_count = self.aws_accounts[account_name]['users_per_account']
-        else:
-            users_count = self.user_settings['users_per_account']
-
+        """Get user-region mapping for specific account based on actual user mappings"""
         users_regions = {}
-        for i in range(1, users_count + 1):
-            username = f"{account_name}_clouduser{i:02d}"
-            region = regions[(i-1) % len(regions)]  # Cycle through regions
-            users_regions[username] = region
-
+        regions = self.user_settings['user_regions']
+        region_index = 0
+        
+        # Find all users mapped to this account
+        for username, user_info in self.user_mappings.items():
+            # Extract account name from username (e.g., account01_clouduser01 -> account01)
+            user_account = '_'.join(username.split('_')[:-1])
+            
+            if user_account == account_name:
+                # Assign region in round-robin fashion
+                region = regions[region_index % len(regions)]
+                users_regions[username] = region
+                region_index += 1
+                
         return users_regions
 
     def create_restriction_policy(self, region):
@@ -235,6 +254,15 @@ class IAMUserManager:
         """Create users in a specific AWS account"""
         self.logger.info(f"Processing account: {account_name.upper()}")
         
+        # Check if account has any user mappings
+        users_regions = self.get_users_for_account(account_name)
+        
+        if not users_regions:
+            self.logger.warning(f"No user mappings found for account: {account_name}")
+            return [], [], []
+        
+        self.logger.info(f"Found {len(users_regions)} mapped users for account {account_name}")
+        
         try:
             # Initialize IAM client for this account
             iam_client, account_config = self.create_iam_client(account_name)
@@ -243,9 +271,6 @@ class IAMUserManager:
             self.logger.error(f"Failed to connect to {account_name}: {e}")
             return [], [], []
         
-        # Get users for this account
-        users_regions = self.get_users_for_account(account_name)
-        
         created_users = []
         skipped_users = []
         failed_users = []
@@ -253,9 +278,14 @@ class IAMUserManager:
         # Check existing users first
         self.logger.info(f"Checking for existing users in {account_name}...")
         for username, region in users_regions.items():
+            user_info = self.get_user_info(username)
+            if user_info is None:
+                self.logger.error(f"User info not found for {username}, skipping...")
+                failed_users.append(username)
+                continue
+                
             try:
                 if self.check_user_exists(iam_client, username):
-                    user_info = self.get_user_info(username)
                     self.logger.log_user_action(username, "SKIP", "ALREADY_EXISTS", user_info['full_name'])
                     skipped_users.append({
                         'username': username,
@@ -282,6 +312,11 @@ class IAMUserManager:
         
         for username, region in users_to_create.items():
             user_info = self.get_user_info(username)
+            if user_info is None:
+                self.logger.error(f"User info not found for {username}, skipping...")
+                failed_users.append(username)
+                continue
+                
             self.logger.info(f"Creating user: {username} → {user_info['full_name']} (Region: {region})")
             
             try:
@@ -307,16 +342,34 @@ class IAMUserManager:
         return created_users, skipped_users, failed_users
 
     def display_account_menu(self):
-        """Display account selection menu"""
+        """Display account selection menu with mapping information"""
         print("\n📋 Available AWS Accounts:")
-        for i, (account_name, config) in enumerate(self.aws_accounts.items(), 1):
-            print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']}")
         
-        print(f"  {len(self.aws_accounts) + 1}. All accounts")
+        # Show accounts with mappings
+        accounts_with_mappings = []
+        accounts_without_mappings = []
+        
+        for i, (account_name, config) in enumerate(self.aws_accounts.items(), 1):
+            user_count = len(self.get_users_for_account(account_name))
+            if user_count > 0:
+                print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']} [{user_count} users mapped]")
+                accounts_with_mappings.append(account_name)
+            else:
+                print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']} [⚠️  NO USERS MAPPED]")
+                accounts_without_mappings.append(account_name)
+        
+        print(f"  {len(self.aws_accounts) + 1}. All accounts with mappings ({len(accounts_with_mappings)} accounts)")
+        print(f"  {len(self.aws_accounts) + 2}. All accounts (including unmapped)")
+        
+        if accounts_without_mappings:
+            print(f"\n⚠️  Warning: {len(accounts_without_mappings)} accounts have no user mappings:")
+            for account in accounts_without_mappings:
+                print(f"     - {account}")
+            print("   These accounts will be skipped unless you explicitly select them.")
         
         while True:
             try:
-                choice = input(f"\n🔢 Select account(s) to process (1-{len(self.aws_accounts) + 1}) or range (e.g., 1-3): ").strip()
+                choice = input(f"\n🔢 Select account(s) to process (1-{len(self.aws_accounts) + 2}) or range (e.g., 1-3): ").strip()
                 
                 # Handle range input like "1-2"
                 if '-' in choice:
@@ -331,7 +384,16 @@ class IAMUserManager:
                         
                         # Return list of account names for the range
                         account_names = list(self.aws_accounts.keys())
-                        return account_names[start_num-1:end_num]
+                        selected_accounts = account_names[start_num-1:end_num]
+                        
+                        # Warn about unmapped accounts in range
+                        unmapped_in_selection = [acc for acc in selected_accounts if acc in accounts_without_mappings]
+                        if unmapped_in_selection:
+                            confirm = input(f"⚠️  Selected range includes accounts with no mappings: {unmapped_in_selection}. Continue? (y/N): ").lower().strip()
+                            if confirm != 'y':
+                                continue
+                        
+                        return selected_accounts
                         
                     except ValueError:
                         print("❌ Invalid range format. Use format like '1-3'")
@@ -341,11 +403,27 @@ class IAMUserManager:
                 choice_num = int(choice)
                 
                 if choice_num == len(self.aws_accounts) + 1:
+                    # All accounts with mappings
+                    return accounts_with_mappings
+                elif choice_num == len(self.aws_accounts) + 2:
+                    # All accounts
+                    if accounts_without_mappings:
+                        confirm = input(f"⚠️  This includes {len(accounts_without_mappings)} accounts with no mappings. Continue? (y/N): ").lower().strip()
+                        if confirm != 'y':
+                            continue
                     return list(self.aws_accounts.keys())
                 elif 1 <= choice_num <= len(self.aws_accounts):
-                    return [list(self.aws_accounts.keys())[choice_num - 1]]
+                    selected_account = list(self.aws_accounts.keys())[choice_num - 1]
+                    
+                    # Warn if selected account has no mappings
+                    if selected_account in accounts_without_mappings:
+                        confirm = input(f"⚠️  Account '{selected_account}' has no user mappings. Continue? (y/N): ").lower().strip()
+                        if confirm != 'y':
+                            continue
+                    
+                    return [selected_account]
                 else:
-                    print(f"❌ Invalid choice. Please enter a number between 1 and {len(self.aws_accounts) + 1}")
+                    print(f"❌ Invalid choice. Please enter a number between 1 and {len(self.aws_accounts) + 2}")
             except ValueError:
                 print("❌ Invalid input. Please enter a number or range (e.g., 1-3).")
 
@@ -422,6 +500,13 @@ class IAMUserManager:
         self.logger.info(f"Execution time: {self.current_time} UTC")
         self.logger.info(f"Executed by: {self.current_user}")
         
+        # Display mapping analysis
+        print(f"\n📊 User Mapping Analysis:")
+        print(f"   Total AWS accounts: {len(self.aws_accounts)}")
+        print(f"   Accounts with mappings: {len(self.accounts_with_mappings)}")
+        print(f"   Accounts without mappings: {len(self.accounts_without_mappings)}")
+        print(f"   Total mapped users: {len(self.user_mappings)}")
+        
         # Select accounts to process
         accounts_to_process = self.display_account_menu()
         self.logger.info(f"Selected accounts for processing: {accounts_to_process}")
@@ -441,6 +526,12 @@ class IAMUserManager:
         total_processed = len(all_created_users) + len(all_skipped_users) + len(all_failed_users)
         self.logger.log_summary(total_processed, len(all_created_users), len(all_failed_users), len(all_skipped_users))
         
+        # Display summary
+        print(f"\n📈 Execution Summary:")
+        print(f"   Users created: {len(all_created_users)}")
+        print(f"   Users skipped: {len(all_skipped_users)}")
+        print(f"   Users failed: {len(all_failed_users)}")
+        
         # Save credentials if any users were created
         if all_created_users:
             save_to_file = input("\n💾 Save credentials to file? (y/N): ").lower().strip()
@@ -449,6 +540,8 @@ class IAMUserManager:
                 if saved_file:
                     print(f"✅ Credentials saved to: {saved_file}")
                     print("📊 Excel files also generated in output/ directory")
+        else:
+            print("\n⚠️  No users were created. Nothing to save.")
 
 def main():
     """Main function"""

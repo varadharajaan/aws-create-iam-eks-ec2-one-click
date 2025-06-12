@@ -53,16 +53,19 @@ if [ "$PKG_MANAGER" = "apt-get" ]; then
     apt-get install -y docker.io
     systemctl enable docker
     systemctl start docker
+    apt-get install -y mariadb105
 elif [ "$PKG_MANAGER" = "yum" ]; then
     # Amazon Linux 2 Docker installation
     yum install -y docker
     systemctl enable docker
     systemctl start docker
+    yum install -y mariadb105
 else
     # Amazon Linux 2023/Fedora Docker installation
     dnf install -y docker
     systemctl enable docker
     systemctl start docker
+    dnf install -y mariadb105
 fi
 
 # Add ec2-user to docker group
