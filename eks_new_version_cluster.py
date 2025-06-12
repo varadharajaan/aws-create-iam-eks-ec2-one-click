@@ -1392,6 +1392,7 @@ class EKSClusterManager:
             # Deploy using the one-liner command for Container Insights
             self.print_colored(Colors.CYAN, "   🚀 Deploying CloudWatch Container Insights...")
             
+
             insights_url = "https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/quickstart/cwagent-fluentd-quickstart.yaml"
             
             # Download and apply the manifest
@@ -3125,7 +3126,7 @@ class EKSClusterManager:
                 basic_rate = alarm_details.get('basic_alarm_success_rate', 0)
                 composite_rate = alarm_details.get('composite_success_rate', 0)
                 self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Alarms: Configured")
-                self.print_colored(Colors.GREEN, f"      - Basic Alarms: {alarm_details.get('basic_alarms_created', 0)}/{alarm_details.get('total_basic_alarms', 0)} ({basic_rate:.1f}%)")
+                self.print_colored(Colors.GREEN, f"      - Composite Alarms: {alarm_details.get('basic_alarms_created', 0)}/{alarm_details.get('total_basic_alarms', 0)} ({basic_rate:.1f}%)")
                 self.print_colored(Colors.GREEN, f"      - Composite Alarms: {alarm_details.get('composite_alarms_created', 0)}/{alarm_details.get('total_composite_alarms', 0)} ({composite_rate:.1f}%)")
             else:
                 self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Alarms: Configured")
