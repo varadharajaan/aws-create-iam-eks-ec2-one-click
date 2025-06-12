@@ -15,7 +15,7 @@ class IAMUserCleanup:
         self.logger = setup_logger("iam_user_cleanup", "user_cleanup")
         self.load_configuration()
         self.load_user_mapping()
-        self.current_time = "2025-06-01 17:14:16"
+        self.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.current_user = "varadharajaan"
         
     def load_configuration(self):
@@ -58,9 +58,26 @@ class IAMUserCleanup:
             self.logger.info(f"User mapping loaded from: {self.mapping_file}")
             self.logger.info(f"Found mappings for {len(self.user_mappings)} users")
             
+            # Analyze which accounts have users
+            self.analyze_user_distribution()
+            
         except Exception as e:
             self.logger.warning(f"Error loading user mapping: {e}")
             self.user_mappings = {}
+
+    def analyze_user_distribution(self):
+        """Analyze user distribution across accounts"""
+        account_user_count = {}
+        
+        for username in self.user_mappings.keys():
+            # Extract account name from username (e.g., account01_clouduser01 -> account01)
+            account_name = '_'.join(username.split('_')[:-1])
+            if account_name not in account_user_count:
+                account_user_count[account_name] = 0
+            account_user_count[account_name] += 1
+        
+        self.account_user_count = account_user_count
+        self.logger.info(f"User distribution: {account_user_count}")
 
     def get_user_info(self, username):
         """Get real user information for a username"""
@@ -68,7 +85,6 @@ class IAMUserCleanup:
             mapping = self.user_mappings[username]
             return f"{mapping['first_name']} {mapping['last_name']} ({mapping['email']})"
         else:
-            self.logger.debug(f"No mapping found for user: {username}")
             return "Unknown User"
 
     def create_iam_client(self, account_name):
@@ -106,13 +122,17 @@ class IAMUserCleanup:
             raise
 
     def get_users_for_account(self, account_name):
-        """Get user list for specific account"""
-        users_count = self.user_settings['users_per_account']
-        users = []
-        for i in range(1, users_count + 1):
-            username = f"{account_name}_clouduser{i:02d}"
-            users.append(username)
-        return users
+        """Get users for specific account from the user mapping file"""
+        users_for_account = []
+        
+        for username in self.user_mappings.keys():
+            # Extract account name from username (e.g., account01_clouduser01 -> account01)
+            user_account = '_'.join(username.split('_')[:-1])
+            if user_account == account_name:
+                users_for_account.append(username)
+        
+        users_for_account.sort()  # Sort for consistent ordering
+        return users_for_account
 
     def check_user_exists(self, iam_client, username):
         """Check if IAM user exists and return user details"""
@@ -410,6 +430,15 @@ class IAMUserCleanup:
         action_prefix = "🧪 [DRY RUN]" if dry_run else "🗑️  [DELETING]"
         self.logger.info(f"{action_prefix} Processing account: {account_name.upper()}")
         
+        # Get users for this account from mapping file
+        users_for_account = self.get_users_for_account(account_name)
+        
+        if not users_for_account:
+            self.logger.info(f"No users found in mapping for account: {account_name}")
+            return [], [], []
+            
+        self.logger.info(f"Found {len(users_for_account)} users to cleanup in {account_name}: {users_for_account}")
+        
         try:
             # Initialize IAM client for this account
             iam_client, account_config = self.create_iam_client(account_name)
@@ -418,16 +447,12 @@ class IAMUserCleanup:
             self.logger.error(f"Failed to connect to {account_name}: {e}")
             return [], [], []
         
-        # Get users for this account
-        users_to_check = self.get_users_for_account(account_name)
-        
         deleted_users = []
         not_found_users = []
         failed_users = []
         
-        self.logger.info(f"Checking for users to cleanup in {account_name}...")
-        
-        for username in users_to_check:
+        # Process each user from the mapping file
+        for username in users_for_account:
             try:
                 exists, user_details = self.check_user_exists(iam_client, username)
                 
@@ -484,12 +509,17 @@ class IAMUserCleanup:
                 print("❌ Invalid input. Please enter a number.")
 
     def select_accounts(self):
-        """Select which accounts to process"""
+        """Select which accounts to process with user count information"""
         print("\n📋 Available AWS Accounts:")
-        for i, (account_name, config) in enumerate(self.aws_accounts.items(), 1):
-            print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']}")
         
-        print(f"  {len(self.aws_accounts) + 1}. All accounts")
+        for i, (account_name, config) in enumerate(self.aws_accounts.items(), 1):
+            user_count = self.account_user_count.get(account_name, 0)
+            if user_count > 0:
+                print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']} [{user_count} users mapped]")
+            else:
+                print(f"  {i}. {account_name} ({config['account_id']}) - {config['email']} [⚠️  NO USERS MAPPED]")
+        
+        print(f"  {len(self.aws_accounts) + 1}. All accounts with mapped users")
         
         while True:
             try:
@@ -497,9 +527,17 @@ class IAMUserCleanup:
                 choice_num = int(choice)
                 
                 if choice_num == len(self.aws_accounts) + 1:
-                    return list(self.aws_accounts.keys())
+                    # Return only accounts that have users in the mapping
+                    return [acc for acc in self.aws_accounts.keys() if self.account_user_count.get(acc, 0) > 0]
                 elif 1 <= choice_num <= len(self.aws_accounts):
-                    return [list(self.aws_accounts.keys())[choice_num - 1]]
+                    selected_account = list(self.aws_accounts.keys())[choice_num - 1]
+                    user_count = self.account_user_count.get(selected_account, 0)
+                    if user_count == 0:
+                        print(f"⚠️  Warning: Account '{selected_account}' has no mapped users to delete.")
+                        confirm = input("Continue anyway? (y/N): ").lower().strip()
+                        if confirm != 'y':
+                            continue
+                    return [selected_account]
                 else:
                     print(f"❌ Invalid choice. Please enter a number between 1 and {len(self.aws_accounts) + 1}")
             except ValueError:
@@ -542,6 +580,11 @@ class IAMUserCleanup:
         self.logger.info(f"Executed by: {self.current_user}")
         self.logger.warning("This script will DELETE IAM users and all associated resources!")
         
+        # Display mapping analysis
+        print(f"\n📊 User Mapping Analysis:")
+        print(f"   Total mapped users: {len(self.user_mappings)}")
+        print(f"   Distribution: {self.account_user_count}")
+        
         # Get cleanup option
         cleanup_option = self.display_cleanup_options()
         self.logger.info(f"Selected cleanup option: {cleanup_option}")
@@ -551,7 +594,11 @@ class IAMUserCleanup:
             self.logger.info("Running in DRY RUN mode - no actual changes will be made")
         
         if cleanup_option in [1, 3]:
-            accounts_to_process = list(self.aws_accounts.keys())
+            # Only process accounts that have users in the mapping
+            accounts_to_process = [acc for acc in self.aws_accounts.keys() if self.account_user_count.get(acc, 0) > 0]
+            if not accounts_to_process:
+                print("❌ No accounts have mapped users to delete!")
+                return
         else:
             accounts_to_process = self.select_accounts()
         
@@ -559,7 +606,8 @@ class IAMUserCleanup:
         
         if not dry_run:
             # Final confirmation
-            print(f"\n⚠️  FINAL WARNING: You are about to DELETE IAM users in {len(accounts_to_process)} account(s)!")
+            total_users_to_delete = sum(self.account_user_count.get(acc, 0) for acc in accounts_to_process)
+            print(f"\n⚠️  FINAL WARNING: You are about to DELETE {total_users_to_delete} IAM users in {len(accounts_to_process)} account(s)!")
             print("This action CANNOT be undone!")
             confirm = input("\nType 'DELETE' to confirm: ").strip()
             

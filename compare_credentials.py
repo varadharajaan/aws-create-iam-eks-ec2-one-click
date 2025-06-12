@@ -5,14 +5,13 @@ import os
 
 def compare_credential_files():
     """Compare credentials between different config files"""
-    
     print("🔍 COMPARING CREDENTIAL FILES")
     print("=" * 60)
     
     # Files to check
     files_to_check = [
         'aws_accounts_config.json',
-        'iam_users_credentials_20250605_224146.json',
+        'iam_users_credentials_20250606_001929.json',
         # Add any other credential files you might have
     ]
     

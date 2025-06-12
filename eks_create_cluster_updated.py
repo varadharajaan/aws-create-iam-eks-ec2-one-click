@@ -1263,6 +1263,19 @@ class EKSClusterManager:
         self.generate_final_commands()
         self.generate_user_instructions()
 
+    def ensure_directory_exists(self, directory_path: str) -> str:
+        """Ensure directory exists, create if it doesn't"""
+        try:
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {directory_path}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {directory_path}")
+            return directory_path
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create directory {directory_path}: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create directory {directory_path}: {str(e)}")
+            return "."  # Fallback to current directory
+
     def create_single_cluster(self, cluster_info: Dict) -> bool:
         """Create a single EKS cluster using admin credentials with user-selected instance type and 1 default node"""
         user = cluster_info['user']
@@ -1272,7 +1285,7 @@ class EKSClusterManager:
         account_key = cluster_info['account_key']
         max_nodes = cluster_info['max_nodes']
         username = user['username']
-        instance_type = cluster_info.get('instance_type', 'c6a.large')  # Get from cluster_info
+        instance_type = cluster_info.get('instance_type', 'c6a.large')
         
         try:
             self.log_operation('INFO', f"Starting cluster creation: {cluster_name} in {region} with {instance_type}")
@@ -1305,14 +1318,22 @@ class EKSClusterManager:
             self.log_operation('INFO', f"VPC resources verified for {account_key} in {region}")
             
             # Step 1: Create EKS cluster
-            self.log_operation('INFO', f"Creating EKS cluster {cluster_name}")
+            self.log_operation('INFO', f"Creating EKS cluster {cluster_name} with CloudWatch logging")
             cluster_config = {
                 'name': cluster_name,
-                'version': '1.27',
+                'version': '1.28',
                 'roleArn': eks_role_arn,
                 'resourcesVpcConfig': {
                     'subnetIds': subnet_ids,
                     'securityGroupIds': [security_group_id]
+                },
+                'logging': {
+                    'clusterLogging': [
+                        {
+                            'types': ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler'],
+                            'enabled': True
+                        }
+                    ]
                 }
             }
             
@@ -1341,7 +1362,7 @@ class EKSClusterManager:
                     'desiredSize': 1
                 },
                 'instanceTypes': [instance_type],
-                'amiType': 'AL2_x86_64',
+                'amiType': 'AL2023_x86_64_STANDARD',#"AL2_x86_64"
                 'diskSize': 20,
                 'nodeRole': node_role_arn,
                 'subnets': subnet_ids,
@@ -1433,7 +1454,7 @@ class EKSClusterManager:
             user_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name} --profile {username}"
             admin_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name}"
             
-            self.kubectl_commands.append({
+            kubectl_info = {
                 'cluster_name': cluster_name,
                 'region': region,
                 'user_command': user_kubectl_cmd,
@@ -1445,10 +1466,16 @@ class EKSClusterManager:
                 'access_verified': verification_success,
                 'user_access_key': user.get('access_key_id', ''),
                 'user_secret_key': user.get('secret_access_key', ''),
-                'instance_type': instance_type,  # Store the selected instance type
+                'instance_type': instance_type,
                 'default_nodes': 1
-            })
-            self.log_operation('INFO', f"Generated kubectl commands for {username}")                
+            }
+            
+            self.kubectl_commands.append(kubectl_info)
+            self.log_operation('INFO', f"Generated kubectl commands for {username}")
+            
+            # *** NEW: Generate individual user instruction file immediately ***
+            self.generate_individual_user_instruction(cluster_info, kubectl_info)
+            
             self.log_operation('INFO', f"Successfully created cluster {cluster_name} with {instance_type} instances")
             self.print_colored(Colors.GREEN, f"✅ Successfully created cluster: {cluster_name} ({instance_type}, 1 node)")
             return True
@@ -1458,7 +1485,6 @@ class EKSClusterManager:
             self.log_operation('ERROR', f"Failed to create cluster {cluster_name}: {error_msg}")
             self.print_colored(Colors.RED, f"❌ Failed to create cluster {cluster_name}: {error_msg}")
             return False
-
     def run(self) -> None:
         """Main execution flow"""
         try:
@@ -1719,7 +1745,7 @@ class EKSClusterManager:
                 "max_nodes": cluster_info['max_nodes'],
                 "instance_type": instance_type,  # Use selected instance type
                 "default_nodes": 1,
-                "ami_type": "AL2_x86_64",
+                "ami_type": "AL2023_x86_64_STANDARD", #"AL2_x86_64"
                 "disk_size": 20,
                 "capacity_type": capacity_type.upper(),  # Use selected capacity type
                 "user_credentials": {
@@ -1942,38 +1968,39 @@ class EKSClusterManager:
             self.print_colored(Colors.RED, f"   ❌ Verification failed: {str(e)}")
             return False
     
-    
-    def generate_user_instructions(self) -> None:
-        """Generate user-specific instruction files"""
-        if not self.kubectl_commands:
-            return
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create individual instruction files for each user
-        for cmd_info in self.kubectl_commands:
-            user_file = f"user_instructions_{cmd_info['user']}_{timestamp}.txt"
+    def generate_individual_user_instruction(self, cluster_info: Dict, kubectl_info: Dict) -> None:
+        """Generate user-specific instruction file immediately after cluster creation"""
+        try:
+            user = cluster_info['user']
+            username = user['username']
+            cluster_name = cluster_info['cluster_name']
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            user_file = f"user_instructions_{username}_{cluster_name}_{timestamp}.txt"
             
             with open(user_file, 'w') as f:
-                f.write(f"# EKS Cluster Access Instructions for {cmd_info['user']}\n")
+                f.write(f"# EKS Cluster Access Instructions for {username}\n")
                 f.write(f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
-                f.write(f"# Cluster: {cmd_info['cluster_name']}\n")
-                f.write(f"# Region: {cmd_info['region']}\n")
-                f.write(f"# Instance Type: {cmd_info['instance_type']}\n")
-                f.write(f"# Default Nodes: {cmd_info['default_nodes']}\n")
-                f.write(f"# Max Nodes: {cmd_info['max_nodes']}\n\n")
+                f.write(f"# Cluster: {cluster_name}\n")
+                f.write(f"# Region: {kubectl_info['region']}\n")
+                f.write(f"# Instance Type: {kubectl_info['instance_type']}\n")
+                f.write(f"# Default Nodes: {kubectl_info['default_nodes']}\n")
+                f.write(f"# Max Nodes: {kubectl_info['max_nodes']}\n")
+                f.write(f"# Account: {kubectl_info['account']}\n")
+                f.write(f"# Auth Configured: {kubectl_info['auth_configured']}\n")
+                f.write(f"# Access Verified: {kubectl_info['access_verified']}\n\n")
                 
                 f.write("## Prerequisites\n")
                 f.write("1. Install AWS CLI: https://aws.amazon.com/cli/\n")
                 f.write("2. Install kubectl: https://kubernetes.io/docs/tasks/tools/\n\n")
                 
                 f.write("## AWS Configuration\n")
-                f.write(f"aws configure set aws_access_key_id {cmd_info['user_access_key']} --profile {cmd_info['user']}\n")
-                f.write(f"aws configure set aws_secret_access_key {cmd_info['user_secret_key']} --profile {cmd_info['user']}\n")
-                f.write(f"aws configure set region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                f.write(f"aws configure set aws_access_key_id {kubectl_info['user_access_key']} --profile {username}\n")
+                f.write(f"aws configure set aws_secret_access_key {kubectl_info['user_secret_key']} --profile {username}\n")
+                f.write(f"aws configure set region {kubectl_info['region']} --profile {username}\n\n")
                 
                 f.write("## Cluster Access\n")
-                f.write(f"{cmd_info['user_command']}\n\n")
+                f.write(f"{kubectl_info['user_command']}\n\n")
                 
                 f.write("## Test Commands\n")
                 f.write("kubectl get nodes\n")
@@ -1981,14 +2008,120 @@ class EKSClusterManager:
                 f.write("kubectl cluster-info\n\n")
                 
                 f.write("## Cluster Details\n")
-                f.write(f"- Instance Type: {cmd_info['instance_type']} (compute optimized)\n")
-                f.write(f"- Default Nodes: {cmd_info['default_nodes']}\n")
-                f.write(f"- Maximum Scalable Nodes: {cmd_info['max_nodes']}\n\n")
+                f.write(f"- Instance Type: {kubectl_info['instance_type']} (selected during creation)\n")
+                f.write(f"- Default Nodes: {kubectl_info['default_nodes']}\n")
+                f.write(f"- Maximum Scalable Nodes: {kubectl_info['max_nodes']}\n")
+                f.write(f"- Capacity Type: {cluster_info.get('capacity_type', 'SPOT')}\n\n")
                 
                 f.write("## Scaling Example\n")
-                f.write(f"aws eks update-nodegroup-config --cluster-name {cmd_info['cluster_name']} --nodegroup-name {cmd_info['cluster_name']}-nodegroup --scaling-config minSize=1,maxSize={cmd_info['max_nodes']},desiredSize=2 --region {cmd_info['region']} --profile {cmd_info['user']}\n")
+                f.write(f"# Scale up the node group\n")
+                f.write(f"aws eks update-nodegroup-config --cluster-name {cluster_name} --nodegroup-name {cluster_name}-nodegroup --scaling-config minSize=1,maxSize={kubectl_info['max_nodes']},desiredSize=2 --region {kubectl_info['region']}\n\n")
+                
+                f.write("## Troubleshooting\n")
+                f.write("# If you get authentication errors:\n")
+                f.write("# 1. Verify your AWS credentials are correct\n")
+                f.write("# 2. Ensure your user has been granted access to the cluster\n")
+                f.write("# 3. Try updating the kubeconfig again\n")
+                f.write(f"# 4. Contact administrator if issues persist\n\n")
+                
+                f.write("## Additional Resources\n")
+                f.write("- EKS User Guide: https://docs.aws.amazon.com/eks/latest/userguide/\n")
+                f.write("- kubectl Cheat Sheet: https://kubernetes.io/docs/reference/kubectl/cheatsheet/\n")
+            
+            self.log_operation('INFO', f"Individual user instruction file created: {user_file}")
+            self.print_colored(Colors.CYAN, f"📄 User instructions saved: {user_file}")
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create user instruction file for {username}: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create user instruction file: {str(e)}")
     
-
+    def generate_user_instructions(self) -> None:
+        """Generate user-specific instruction files in eks/user_login directory"""
+        if not self.kubectl_commands:
+            return
+        
+        # Create directory structure if it doesn't exist
+        base_dir = "eks"
+        user_login_dir = os.path.join(base_dir, "user_login")
+        
+        try:
+            if not os.path.exists(base_dir):
+                os.makedirs(base_dir, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {base_dir}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {base_dir}")
+            
+            if not os.path.exists(user_login_dir):
+                os.makedirs(user_login_dir, exist_ok=True)
+                self.log_operation('INFO', f"Created directory: {user_login_dir}")
+                self.print_colored(Colors.CYAN, f"📁 Created directory: {user_login_dir}")
+                
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create directories: {str(e)}")
+            self.print_colored(Colors.RED, f"❌ Failed to create directories: {str(e)}")
+            # Fallback to current directory
+            user_login_dir = "."
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create individual instruction files for each user
+        for cmd_info in self.kubectl_commands:
+            user_file = os.path.join(user_login_dir, f"user_instructions_{cmd_info['user']}_{timestamp}.txt")
+            
+            try:
+                with open(user_file, 'w') as f:
+                    f.write(f"# EKS Cluster Access Instructions for {cmd_info['user']}\n")
+                    f.write(f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+                    f.write(f"# Generated by: varadharajaan\n")
+                    f.write(f"# Cluster: {cmd_info['cluster_name']}\n")
+                    f.write(f"# Region: {cmd_info['region']}\n")
+                    f.write(f"# Instance Type: {cmd_info['instance_type']}\n")
+                    f.write(f"# Default Nodes: {cmd_info['default_nodes']}\n")
+                    f.write(f"# Max Nodes: {cmd_info['max_nodes']}\n\n")
+                    
+                    f.write("## Prerequisites\n")
+                    f.write("1. Install AWS CLI: https://aws.amazon.com/cli/\n")
+                    f.write("2. Install kubectl: https://kubernetes.io/docs/tasks/tools/\n\n")
+                    
+                    f.write("## AWS Configuration\n")
+                    f.write(f"aws configure set aws_access_key_id {cmd_info['user_access_key']} --profile {cmd_info['user']}\n")
+                    f.write(f"aws configure set aws_secret_access_key {cmd_info['user_secret_key']} --profile {cmd_info['user']}\n")
+                    f.write(f"aws configure set region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                    
+                    f.write("## Cluster Access\n")
+                    f.write(f"{cmd_info['user_command']}\n\n")
+                    
+                    f.write("## Test Commands\n")
+                    f.write("kubectl get nodes\n")
+                    f.write("kubectl get pods --all-namespaces\n")
+                    f.write("kubectl cluster-info\n\n")
+                    
+                    f.write("## Cluster Details\n")
+                    f.write(f"- Instance Type: {cmd_info['instance_type']} (compute optimized)\n")
+                    f.write(f"- Default Nodes: {cmd_info['default_nodes']}\n")
+                    f.write(f"- Maximum Scalable Nodes: {cmd_info['max_nodes']}\n\n")
+                    
+                    f.write("## Scaling Example\n")
+                    f.write(f"aws eks update-nodegroup-config --cluster-name {cmd_info['cluster_name']} --nodegroup-name {cmd_info['cluster_name']}-nodegroup --scaling-config minSize=1,maxSize={cmd_info['max_nodes']},desiredSize=2 --region {cmd_info['region']} --profile {cmd_info['user']}\n\n")
+                    
+                    f.write("## Troubleshooting\n")
+                    f.write("# If you get authentication errors:\n")
+                    f.write("# 1. Verify your AWS credentials are correct\n")
+                    f.write("# 2. Ensure your user has been granted access to the cluster\n")
+                    f.write("# 3. Try updating the kubeconfig again\n")
+                    f.write("# 4. Contact administrator if issues persist\n\n")
+                    
+                    f.write("## Additional Resources\n")
+                    f.write("- EKS User Guide: https://docs.aws.amazon.com/eks/latest/userguide/\n")
+                    f.write("- kubectl Cheat Sheet: https://kubernetes.io/docs/reference/kubectl/cheatsheet/\n")
+                
+                self.log_operation('INFO', f"User instruction file created: {user_file}")
+                self.print_colored(Colors.CYAN, f"📄 User instructions saved: {user_file}")
+                
+            except Exception as e:
+                self.log_operation('ERROR', f"Failed to create user instruction file for {cmd_info['user']}: {str(e)}")
+                self.print_colored(Colors.RED, f"❌ Failed to create user instruction file for {cmd_info['user']}: {str(e)}")
+        
+        self.print_colored(Colors.GREEN, f"✅ Generated {len(self.kubectl_commands)} user instruction files in {user_login_dir}/")
 
 def main():
     """Main entry point"""

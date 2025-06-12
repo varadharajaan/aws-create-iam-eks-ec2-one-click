@@ -53,16 +53,19 @@ if [ "$PKG_MANAGER" = "apt-get" ]; then
     apt-get install -y docker.io
     systemctl enable docker
     systemctl start docker
+    apt-get install -y mariadb105
 elif [ "$PKG_MANAGER" = "yum" ]; then
     # Amazon Linux 2 Docker installation
     yum install -y docker
     systemctl enable docker
     systemctl start docker
+    yum install -y mariadb105
 else
     # Amazon Linux 2023/Fedora Docker installation
     dnf install -y docker
     systemctl enable docker
     systemctl start docker
+    dnf install -y mariadb105
 fi
 
 # Add ec2-user to docker group
@@ -88,8 +91,10 @@ else
     curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-latest.x86_64.rpm
     if [ "$PKG_MANAGER" = "dnf" ]; then
         dnf install -y minikube-latest.x86_64.rpm
+        dnf install mariadb105
     else
         yum install -y minikube-latest.x86_64.rpm
+        yum install mariadb105
     fi
     rm minikube-latest.x86_64.rpm
 fi
