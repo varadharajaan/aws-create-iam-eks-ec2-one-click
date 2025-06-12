@@ -2020,6 +2020,727 @@ class EKSClusterManager:
             self.log_operation('ERROR', f"Failed to setup scheduled scaling for {cluster_name}: {error_msg}")
             self.print_colored(Colors.RED, f"❌ Scheduled scaling setup failed: {error_msg}")
             return False
+
+    def ensure_iam_roles_with_cloudwatch(self, iam_client, account_id: str) -> tuple:
+        """Enhanced IAM role creation with CloudWatch permissions"""
+        try:
+            # Get existing roles or create new ones
+            eks_role_arn, node_role_arn = self.ensure_iam_roles(iam_client, account_id)
+            
+            # Add CloudWatch permissions to node role
+            node_role_name = node_role_arn.split('/')[-1]
+            
+            # CloudWatch agent policy
+            cloudwatch_agent_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "cloudwatch:PutMetricData",
+                            "ec2:DescribeVolumes",
+                            "ec2:DescribeTags",
+                            "logs:PutLogEvents",
+                            "logs:CreateLogGroup",
+                            "logs:CreateLogStream",
+                            "logs:DescribeLogStreams",
+                            "logs:DescribeLogGroups"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+            
+            # Attach CloudWatch agent policy
+            try:
+                iam_client.put_role_policy(
+                    RoleName=node_role_name,
+                    PolicyName='CloudWatchAgentServerPolicy',
+                    PolicyDocument=json.dumps(cloudwatch_agent_policy)
+                )
+                self.log_operation('INFO', f"CloudWatch agent policy attached to {node_role_name}")
+            except Exception as e:
+                self.log_operation('WARNING', f"Failed to attach CloudWatch policy: {str(e)}")
+            
+            return eks_role_arn, node_role_arn
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to ensure IAM roles with CloudWatch: {str(e)}")
+            raise
+
+    def deploy_cloudwatch_agent(self, cluster_name: str, region: str, access_key: str, secret_key: str, account_id: str) -> bool:
+        """Deploy CloudWatch agent as DaemonSet"""
+        try:
+            self.log_operation('INFO', f"Deploying CloudWatch agent for cluster {cluster_name}")
+            
+            # Create CloudWatch agent configuration
+            cloudwatch_config = self.get_cloudwatch_agent_config(cluster_name, region)
+            
+            # Create Kubernetes manifests
+            namespace_manifest = self.get_cloudwatch_namespace_manifest()
+            service_account_manifest = self.get_cloudwatch_service_account_manifest()
+            configmap_manifest = self.get_cloudwatch_configmap_manifest(cloudwatch_config)
+            daemonset_manifest = self.get_cloudwatch_daemonset_manifest(cluster_name, region, account_id)
+            
+            # Apply manifests using kubectl
+            manifests = [
+                ('namespace', namespace_manifest),
+                ('service-account', service_account_manifest),
+                ('configmap', configmap_manifest),
+                ('daemonset', daemonset_manifest)
+            ]
+            
+            for manifest_type, manifest in manifests:
+                if self.apply_kubernetes_manifest(cluster_name, region, access_key, secret_key, manifest):
+                    self.log_operation('INFO', f"Applied CloudWatch {manifest_type} manifest")
+                else:
+                    self.log_operation('ERROR', f"Failed to apply CloudWatch {manifest_type} manifest")
+                    return False
+            
+            # Wait for DaemonSet to be ready
+            if self.wait_for_daemonset_ready(cluster_name, region, access_key, secret_key, 'amazon-cloudwatch', 'cloudwatch-agent'):
+                self.log_operation('INFO', f"CloudWatch agent deployed successfully for {cluster_name}")
+                return True
+            else:
+                self.log_operation('ERROR', f"CloudWatch agent failed to deploy for {cluster_name}")
+                return False
+                
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to deploy CloudWatch agent: {str(e)}")
+            return False
+
+    def setup_cloudwatch_alarms(self, cluster_name: str, region: str, cloudwatch_client, nodegroup_name: str, account_id: str) -> bool:
+        """Setup comprehensive CloudWatch alarms for EKS cluster"""
+        try:
+            self.log_operation('INFO', f"Setting up CloudWatch alarms for cluster {cluster_name}")
+            
+            alarms_created = 0
+            total_alarms = 0
+            
+            # Define alarm configurations
+            alarm_configs = [
+                {
+                    'name': f'{cluster_name}-high-cpu-utilization',
+                    'description': f'High CPU utilization on {cluster_name}',
+                    'metric_name': 'CPUUtilization',
+                    'namespace': 'AWS/EKS',
+                    'statistic': 'Average',
+                    'threshold': 80.0,
+                    'comparison': 'GreaterThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                },
+                {
+                    'name': f'{cluster_name}-high-memory-utilization',
+                    'description': f'High memory utilization on {cluster_name}',
+                    'metric_name': 'MemoryUtilization',
+                    'namespace': 'AWS/EKS',
+                    'statistic': 'Average',
+                    'threshold': 85.0,
+                    'comparison': 'GreaterThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                },
+                {
+                    'name': f'{cluster_name}-pod-failures',
+                    'description': f'High pod failure rate on {cluster_name}',
+                    'metric_name': 'pod_number_of_container_restarts',
+                    'namespace': 'ContainerInsights',
+                    'statistic': 'Sum',
+                    'threshold': 10.0,
+                    'comparison': 'GreaterThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                },
+                {
+                    'name': f'{cluster_name}-node-not-ready',
+                    'description': f'Node not ready on {cluster_name}',
+                    'metric_name': 'cluster_node_running_total',
+                    'namespace': 'ContainerInsights',
+                    'statistic': 'Average',
+                    'threshold': 1.0,
+                    'comparison': 'LessThanThreshold',
+                    'evaluation_periods': 3,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                },
+                {
+                    'name': f'{cluster_name}-disk-space-low',
+                    'description': f'Low disk space on {cluster_name} nodes',
+                    'metric_name': 'DiskSpaceUtilization',
+                    'namespace': 'CWAgent',
+                    'statistic': 'Average',
+                    'threshold': 85.0,
+                    'comparison': 'GreaterThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [
+                        {'Name': 'ClusterName', 'Value': cluster_name},
+                        {'Name': 'NodegroupName', 'Value': nodegroup_name}
+                    ]
+                },
+                {
+                    'name': f'{cluster_name}-network-errors',
+                    'description': f'High network errors on {cluster_name}',
+                    'metric_name': 'NetworkPacketsIn',
+                    'namespace': 'AWS/EC2',
+                    'statistic': 'Sum',
+                    'threshold': 1000.0,
+                    'comparison': 'GreaterThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                },
+                {
+                    'name': f'{cluster_name}-service-unhealthy',
+                    'description': f'Service unhealthy on {cluster_name}',
+                    'metric_name': 'service_number_of_running_pods',
+                    'namespace': 'ContainerInsights',
+                    'statistic': 'Average',
+                    'threshold': 1.0,
+                    'comparison': 'LessThanThreshold',
+                    'evaluation_periods': 2,
+                    'period': 300,
+                    'dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]
+                }
+            ]
+            
+            # Create each alarm
+            for alarm_config in alarm_configs:
+                total_alarms += 1
+                try:
+                    cloudwatch_client.put_metric_alarm(
+                        AlarmName=alarm_config['name'],
+                        ComparisonOperator=alarm_config['comparison'],
+                        EvaluationPeriods=alarm_config['evaluation_periods'],
+                        MetricName=alarm_config['metric_name'],
+                        Namespace=alarm_config['namespace'],
+                        Period=alarm_config['period'],
+                        Statistic=alarm_config['statistic'],
+                        Threshold=alarm_config['threshold'],
+                        ActionsEnabled=True,
+                        AlarmDescription=alarm_config['description'],
+                        Dimensions=alarm_config['dimensions'],
+                        Unit='Percent' if 'utilization' in alarm_config['metric_name'].lower() else 'Count'
+                    )
+                    
+                    alarms_created += 1
+                    self.log_operation('INFO', f"Created alarm: {alarm_config['name']}")
+                    
+                except Exception as e:
+                    self.log_operation('ERROR', f"Failed to create alarm {alarm_config['name']}: {str(e)}")
+            
+            # Create composite alarms for critical conditions
+            composite_alarms_success = self.create_composite_alarms(cloudwatch_client, cluster_name, alarm_configs)
+            
+            # Calculate success rates
+            basic_alarm_success_rate = (alarms_created / total_alarms) * 100 if total_alarms > 0 else 0
+            overall_success = basic_alarm_success_rate >= 70 and composite_alarms_success
+            
+            # Log comprehensive results
+            self.log_operation('INFO', f"CloudWatch alarms setup summary:")
+            self.log_operation('INFO', f"  - Basic alarms: {alarms_created}/{total_alarms} created ({basic_alarm_success_rate:.1f}%)")
+            self.log_operation('INFO', f"  - Composite alarms: {'Success' if composite_alarms_success else 'Failed'}")
+            self.log_operation('INFO', f"  - Overall status: {'Success' if overall_success else 'Partial/Failed'}")
+            
+            # Store detailed alarm information for later use
+            if not hasattr(self, 'alarm_details'):
+                self.alarm_details = {}
+            
+            self.alarm_details[cluster_name] = {
+                'basic_alarms_created': alarms_created,
+                'total_basic_alarms': total_alarms,
+                'basic_alarm_success_rate': basic_alarm_success_rate,
+                'composite_alarms_success': composite_alarms_success,
+                'overall_success': overall_success,
+                'alarm_names': [config['name'] for config in alarm_configs if alarms_created > 0]
+            }
+            
+            return overall_success
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to setup CloudWatch alarms: {str(e)}")
+            return False
+
+    def create_composite_alarms(self, cloudwatch_client, cluster_name: str, alarm_configs: list) -> bool:
+        """Create composite alarms for critical conditions"""
+        try:
+            composite_alarms_created = 0
+            total_composite_alarms = 0
+            
+            # Define composite alarm configurations
+            composite_configs = [
+                {
+                    'name': f'{cluster_name}-critical-health',
+                    'description': f'Critical health issues detected in {cluster_name}',
+                    'rule': f'ALARM("{cluster_name}-high-cpu-utilization") OR ALARM("{cluster_name}-high-memory-utilization") OR ALARM("{cluster_name}-node-not-ready")',
+                    'severity': 'CRITICAL'
+                },
+                {
+                    'name': f'{cluster_name}-performance-degradation',
+                    'description': f'Performance degradation detected in {cluster_name}',
+                    'rule': f'ALARM("{cluster_name}-pod-failures") OR ALARM("{cluster_name}-service-unhealthy")',
+                    'severity': 'HIGH'
+                },
+                {
+                    'name': f'{cluster_name}-resource-exhaustion',
+                    'description': f'Resource exhaustion detected in {cluster_name}',
+                    'rule': f'ALARM("{cluster_name}-disk-space-low") AND (ALARM("{cluster_name}-high-cpu-utilization") OR ALARM("{cluster_name}-high-memory-utilization"))',
+                    'severity': 'HIGH'
+                },
+                {
+                    'name': f'{cluster_name}-infrastructure-issues',
+                    'description': f'Infrastructure issues detected in {cluster_name}',
+                    'rule': f'ALARM("{cluster_name}-network-errors") OR ALARM("{cluster_name}-node-not-ready")',
+                    'severity': 'MEDIUM'
+                }
+            ]
+            
+            # Create each composite alarm
+            for composite_config in composite_configs:
+                total_composite_alarms += 1
+                try:
+                    cloudwatch_client.put_composite_alarm(
+                        AlarmName=composite_config['name'],
+                        AlarmDescription=composite_config['description'],
+                        AlarmRule=composite_config['rule'],
+                        ActionsEnabled=True,
+                        Tags=[
+                            {
+                                'Key': 'Cluster',
+                                'Value': cluster_name
+                            },
+                            {
+                                'Key': 'Severity',
+                                'Value': composite_config['severity']
+                            },
+                            {
+                                'Key': 'AlarmType',
+                                'Value': 'Composite'
+                            }
+                        ]
+                    )
+                    
+                    composite_alarms_created += 1
+                    self.log_operation('INFO', f"Created composite alarm: {composite_config['name']} (Severity: {composite_config['severity']})")
+                    
+                except Exception as e:
+                    self.log_operation('ERROR', f"Failed to create composite alarm {composite_config['name']}: {str(e)}")
+            
+            # Log composite alarm results
+            composite_success_rate = (composite_alarms_created / total_composite_alarms) * 100 if total_composite_alarms > 0 else 0
+            self.log_operation('INFO', f"Composite alarms: {composite_alarms_created}/{total_composite_alarms} created ({composite_success_rate:.1f}%)")
+            
+            # Store composite alarm details
+            if hasattr(self, 'alarm_details') and cluster_name in self.alarm_details:
+                self.alarm_details[cluster_name].update({
+                    'composite_alarms_created': composite_alarms_created,
+                    'total_composite_alarms': total_composite_alarms,
+                    'composite_success_rate': composite_success_rate,
+                    'composite_alarm_names': [config['name'] for config in composite_configs]
+                })
+            
+            # Consider successful if at least 75% of composite alarms are created
+            return composite_success_rate >= 75
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to create composite alarms: {str(e)}")
+            return False
+    # Updated cluster creation summary in the main method
+    def print_enhanced_cluster_summary(self, cluster_name: str, cluster_info: dict):
+        """Print enhanced cluster creation summary with detailed alarm information"""
+        
+        self.print_colored(Colors.GREEN, f"🎉 Cluster Creation Summary for {cluster_name}:")
+        self.print_colored(Colors.GREEN, f"   ✅ EKS Version: 1.28")
+        self.print_colored(Colors.GREEN, f"   ✅ AMI Type: AL2023_x86_64_STANDARD")
+        self.print_colored(Colors.GREEN, f"   ✅ Instance Types: {', '.join(cluster_info.get('diversified_instance_types', []))}")
+        self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Logging: Enabled")
+        self.print_colored(Colors.GREEN, f"   ✅ Essential Add-ons: {'Installed' if cluster_info.get('addons_installed') else 'Failed'}")
+        self.print_colored(Colors.GREEN, f"   ✅ Container Insights: {'Enabled' if cluster_info.get('container_insights_enabled') else 'Failed'}")
+        self.print_colored(Colors.GREEN, f"   ✅ Cluster Autoscaler: {'Enabled' if cluster_info.get('autoscaler_enabled') else 'Failed'}")
+        self.print_colored(Colors.GREEN, f"   ✅ Scheduled Scaling: {'Enabled' if cluster_info.get('scheduled_scaling_enabled') else 'Failed'}")
+        self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Agent: {'Deployed' if cluster_info.get('cloudwatch_agent_enabled') else 'Failed'}")
+        
+        # Enhanced CloudWatch alarms reporting
+        if cluster_info.get('cloudwatch_alarms_enabled'):
+            alarm_details = self.alarm_details.get(cluster_name, {})
+            if alarm_details:
+                basic_rate = alarm_details.get('basic_alarm_success_rate', 0)
+                composite_rate = alarm_details.get('composite_success_rate', 0)
+                self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Alarms: Configured")
+                self.print_colored(Colors.GREEN, f"      - Basic Alarms: {alarm_details.get('basic_alarms_created', 0)}/{alarm_details.get('total_basic_alarms', 0)} ({basic_rate:.1f}%)")
+                self.print_colored(Colors.GREEN, f"      - Composite Alarms: {alarm_details.get('composite_alarms_created', 0)}/{alarm_details.get('total_composite_alarms', 0)} ({composite_rate:.1f}%)")
+            else:
+                self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Alarms: Configured")
+        else:
+            self.print_colored(Colors.RED, f"   ❌ CloudWatch Alarms: Failed")
+        
+        auth_status = cluster_info.get('auth_configured', False)
+        self.print_colored(Colors.GREEN if auth_status else Colors.YELLOW, 
+                        f"   {'✅' if auth_status else '⚠️ '} User Access: {'Configured' if auth_status else 'Failed'}")
+
+    # Add this method to generate alarm summary report
+    def generate_alarm_summary_report(self, cluster_name: str) -> str:
+        """Generate a detailed alarm summary report"""
+        if not hasattr(self, 'alarm_details') or cluster_name not in self.alarm_details:
+            return "No alarm details available"
+        
+        details = self.alarm_details[cluster_name]
+        
+        report = f"""
+    📊 CloudWatch Alarms Summary for {cluster_name}
+    {'='*50}
+
+    Basic Alarms:
+    - Created: {details.get('basic_alarms_created', 0)}/{details.get('total_basic_alarms', 0)}
+    - Success Rate: {details.get('basic_alarm_success_rate', 0):.1f}%
+    - Alarm Names: {', '.join(details.get('alarm_names', []))}
+
+    Composite Alarms:
+    - Created: {details.get('composite_alarms_created', 0)}/{details.get('total_composite_alarms', 0)}
+    - Success Rate: {details.get('composite_success_rate', 0):.1f}%
+    - Alarm Names: {', '.join(details.get('composite_alarm_names', []))}
+
+    Overall Status: {'✅ SUCCESS' if details.get('overall_success') else '⚠️  PARTIAL/FAILED'}
+    """
+        
+        return report
+  
+
+    def get_cloudwatch_agent_config(self, cluster_name: str, region: str) -> dict:
+        """Generate CloudWatch agent configuration"""
+        return {
+            "agent": {
+                "metrics_collection_interval": 60,
+                "run_as_user": "cwagent"
+            },
+            "logs": {
+                "logs_collected": {
+                    "files": {
+                        "collect_list": [
+                            {
+                                "file_path": "/var/log/messages",
+                                "log_group_name": f"/aws/eks/{cluster_name}/system",
+                                "log_stream_name": "{instance_id}/messages"
+                            },
+                            {
+                                "file_path": "/var/log/dmesg",
+                                "log_group_name": f"/aws/eks/{cluster_name}/system",
+                                "log_stream_name": "{instance_id}/dmesg"
+                            }
+                        ]
+                    },
+                    "kubernetes": {
+                        "cluster_name": cluster_name,
+                        "metrics_collection_interval": 60
+                    }
+                }
+            },
+            "metrics": {
+                "namespace": "CWAgent",
+                "metrics_collected": {
+                    "cpu": {
+                        "measurement": [
+                            "cpu_usage_idle",
+                            "cpu_usage_iowait",
+                            "cpu_usage_user",
+                            "cpu_usage_system"
+                        ],
+                        "metrics_collection_interval": 60,
+                        "totalcpu": False
+                    },
+                    "disk": {
+                        "measurement": [
+                            "used_percent"
+                        ],
+                        "metrics_collection_interval": 60,
+                        "resources": [
+                            "*"
+                        ]
+                    },
+                    "diskio": {
+                        "measurement": [
+                            "io_time"
+                        ],
+                        "metrics_collection_interval": 60,
+                        "resources": [
+                            "*"
+                        ]
+                    },
+                    "mem": {
+                        "measurement": [
+                            "mem_used_percent"
+                        ],
+                        "metrics_collection_interval": 60
+                    },
+                    "netstat": {
+                        "measurement": [
+                            "tcp_established",
+                            "tcp_time_wait"
+                        ],
+                        "metrics_collection_interval": 60
+                    },
+                    "swap": {
+                        "measurement": [
+                            "swap_used_percent"
+                        ],
+                        "metrics_collection_interval": 60
+                    }
+                }
+            }
+        }
+
+    def get_cloudwatch_namespace_manifest(self) -> str:
+        """Get CloudWatch namespace manifest"""
+        return """
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+    name: amazon-cloudwatch
+    labels:
+        name: amazon-cloudwatch
+    """
+
+    def get_cloudwatch_service_account_manifest(self) -> str:
+        """Get CloudWatch service account manifest"""
+        return """
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+    name: cloudwatch-agent
+    namespace: amazon-cloudwatch
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+    name: cloudwatch-agent-role
+    rules:
+    - apiGroups: [""]
+        resources: ["pods", "nodes", "services", "endpoints", "replicasets"]
+        verbs: ["list", "watch"]
+    - apiGroups: ["apps"]
+        resources: ["replicasets"]
+        verbs: ["list", "watch"]
+    - apiGroups: ["batch"]
+        resources: ["jobs"]
+        verbs: ["list", "watch"]
+    - apiGroups: [""]
+        resources: ["nodes/stats", "configmaps", "events"]
+        verbs: ["create", "get", "list", "watch"]
+    - apiGroups: [""]
+        resources: ["configmaps"]
+        verbs: ["update"]
+    - nonResourceURLs: ["/metrics"]
+        verbs: ["get"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+    name: cloudwatch-agent-role-binding
+    roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: cloudwatch-agent-role
+    subjects:
+    - kind: ServiceAccount
+        name: cloudwatch-agent
+        namespace: amazon-cloudwatch
+    """
+
+    def get_cloudwatch_configmap_manifest(self, config: dict) -> str:
+        """Get CloudWatch ConfigMap manifest"""
+        config_json = json.dumps(config, indent=2)
+        return f"""
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+    name: cwagentconfig
+    namespace: amazon-cloudwatch
+    data:
+    cwagentconfig.json: |
+    {textwrap.indent(config_json, '    ')}
+    """
+
+    def get_cloudwatch_daemonset_manifest(self, cluster_name: str, region: str, account_id: str) -> str:
+        """Get CloudWatch DaemonSet manifest"""
+        return f"""
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+    name: cloudwatch-agent
+    namespace: amazon-cloudwatch
+    spec:
+    selector:
+        matchLabels:
+        name: cloudwatch-agent
+    template:
+        metadata:
+        labels:
+            name: cloudwatch-agent
+        spec:
+        containers:
+        - name: cloudwatch-agent
+            image: public.ecr.aws/cloudwatch-agent/cloudwatch-agent:1.300026.0b303
+            ports:
+            - containerPort: 8125
+            hostPort: 8125
+            protocol: UDP
+            resources:
+            limits:
+                cpu: 200m
+                memory: 200Mi
+            requests:
+                cpu: 200m
+                memory: 200Mi
+            env:
+            - name: HOST_IP
+            valueFrom:
+                fieldRef:
+                fieldPath: status.hostIP
+            - name: HOST_NAME
+            valueFrom:
+                fieldRef:
+                fieldPath: spec.nodeName
+            - name: K8S_NAMESPACE
+            valueFrom:
+                fieldRef:
+                fieldPath: metadata.namespace
+            - name: CI_VERSION
+            value: "k8s/1.3.26"
+            volumeMounts:
+            - name: cwagentconfig
+            mountPath: /etc/cwagentconfig
+            - name: rootfs
+            mountPath: /rootfs
+            readOnly: true
+            - name: dockersock
+            mountPath: /var/run/docker.sock
+            readOnly: true
+            - name: varlibdocker
+            mountPath: /var/lib/docker
+            readOnly: true
+            - name: varlog
+            mountPath: /var/log
+            readOnly: true
+            - name: sys
+            mountPath: /sys
+            readOnly: true
+            - name: devdisk
+            mountPath: /dev/disk
+            readOnly: true
+        volumes:
+        - name: cwagentconfig
+            configMap:
+            name: cwagentconfig
+        - name: rootfs
+            hostPath:
+            path: /
+        - name: dockersock
+            hostPath:
+            path: /var/run/docker.sock
+        - name: varlibdocker
+            hostPath:
+            path: /var/lib/docker
+        - name: varlog
+            hostPath:
+            path: /var/log
+        - name: sys
+            hostPath:
+            path: /sys
+        - name: devdisk
+            hostPath:
+            path: /dev/disk/
+        terminationGracePeriodSeconds: 60
+        serviceAccountName: cloudwatch-agent
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+    """
+
+    def apply_kubernetes_manifest(self, cluster_name: str, region: str, access_key: str, secret_key: str, manifest: str) -> bool:
+        """Apply Kubernetes manifest using kubectl"""
+        try:
+            # Create temporary file for manifest
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(manifest)
+                manifest_file = f.name
+            
+            # Set up kubectl context
+            env = os.environ.copy()
+            env['AWS_ACCESS_KEY_ID'] = access_key
+            env['AWS_SECRET_ACCESS_KEY'] = secret_key
+            env['AWS_DEFAULT_REGION'] = region
+            
+            # Update kubeconfig
+            kubeconfig_cmd = [
+                'aws', 'eks', 'update-kubeconfig',
+                '--region', region,
+                '--name', cluster_name
+            ]
+            
+            result = subprocess.run(kubeconfig_cmd, capture_output=True, text=True, env=env)
+            if result.returncode != 0:
+                self.log_operation('ERROR', f"Failed to update kubeconfig: {result.stderr}")
+                return False
+            
+            # Apply manifest
+            kubectl_cmd = ['kubectl', 'apply', '-f', manifest_file]
+            result = subprocess.run(kubectl_cmd, capture_output=True, text=True, env=env)
+            
+            # Clean up
+            os.unlink(manifest_file)
+            
+            if result.returncode == 0:
+                self.log_operation('INFO', f"Successfully applied manifest")
+                return True
+            else:
+                self.log_operation('ERROR', f"Failed to apply manifest: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to apply Kubernetes manifest: {str(e)}")
+            return False
+
+    def wait_for_daemonset_ready(self, cluster_name: str, region: str, access_key: str, secret_key: str, namespace: str, daemonset_name: str, timeout: int = 300) -> bool:
+        """Wait for DaemonSet to be ready"""
+        try:
+            env = os.environ.copy()
+            env['AWS_ACCESS_KEY_ID'] = access_key
+            env['AWS_SECRET_ACCESS_KEY'] = secret_key
+            env['AWS_DEFAULT_REGION'] = region
+            
+            # Update kubeconfig
+            kubeconfig_cmd = [
+                'aws', 'eks', 'update-kubeconfig',
+                '--region', region,
+                '--name', cluster_name
+            ]
+            
+            subprocess.run(kubeconfig_cmd, capture_output=True, text=True, env=env)
+            
+            # Wait for DaemonSet
+            wait_cmd = [
+                'kubectl', 'wait', '--for=condition=ready', 'pod',
+                '-l', f'name={daemonset_name}',
+                '-n', namespace,
+                f'--timeout={timeout}s'
+            ]
+            
+            result = subprocess.run(wait_cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode == 0:
+                self.log_operation('INFO', f"DaemonSet {daemonset_name} is ready")
+                return True
+            else:
+                self.log_operation('WARNING', f"DaemonSet {daemonset_name} not ready within timeout: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to wait for DaemonSet: {str(e)}")
+            return False
     
     def create_single_cluster(self, cluster_info: Dict) -> bool:
         """Create a single EKS cluster using admin credentials with user-selected instance type and 1 default node"""
@@ -2049,12 +2770,13 @@ class EKSClusterManager:
             eks_client = admin_session.client('eks')
             ec2_client = admin_session.client('ec2')
             iam_client = admin_session.client('iam')
+            cloudwatch_client = admin_session.client('cloudwatch')  # Added CloudWatch client
             
             self.log_operation('INFO', f"AWS admin session created for {account_key} in {region}")
             
-            # Ensure IAM roles exist
+            # Ensure IAM roles exist (including CloudWatch permissions)
             self.log_operation('DEBUG', f"Ensuring IAM roles exist for {account_key}")
-            eks_role_arn, node_role_arn = self.ensure_iam_roles(iam_client, account_id)
+            eks_role_arn, node_role_arn = self.ensure_iam_roles_with_cloudwatch(iam_client, account_id)
             self.log_operation('INFO', f"IAM roles verified/created for {account_key}")
             
             # Get VPC resources
@@ -2066,7 +2788,7 @@ class EKSClusterManager:
             self.log_operation('INFO', f"Creating EKS cluster {cluster_name} with CloudWatch logging and version 1.28")
             cluster_config = {
                 'name': cluster_name,
-                'version': '1.28',  # Updated version
+                'version': '1.28',
                 'roleArn': eks_role_arn,
                 'resourcesVpcConfig': {
                     'subnetIds': subnet_ids,
@@ -2113,8 +2835,8 @@ class EKSClusterManager:
                     'maxSize': max_nodes,
                     'desiredSize': 1
                 },
-                'instanceTypes': instance_types,  # Multiple types for better availability
-                'amiType': 'AL2023_x86_64_STANDARD',  # Updated AMI type
+                'instanceTypes': instance_types,
+                'amiType': 'AL2023_x86_64_STANDARD',
                 'diskSize': 20,
                 'nodeRole': node_role_arn,
                 'subnets': subnet_ids,
@@ -2239,6 +2961,28 @@ class EKSClusterManager:
             )
             cluster_info['scheduled_scaling_enabled'] = scheduling_success
 
+            # Step 8: Deploy CloudWatch Agent - NEW ENHANCEMENT
+            self.print_colored(Colors.BLUE, f"\n📊 Deploying CloudWatch Agent...")
+            cloudwatch_agent_success = self.deploy_cloudwatch_agent(
+                cluster_name,
+                region,
+                admin_access_key,
+                admin_secret_key,
+                account_id
+            )
+            cluster_info['cloudwatch_agent_enabled'] = cloudwatch_agent_success
+
+            # Step 9: Setup CloudWatch Alarms - NEW ENHANCEMENT
+            self.print_colored(Colors.BLUE, f"\n🚨 Setting up CloudWatch Alarms...")
+            alarms_success = self.setup_cloudwatch_alarms(
+                cluster_name,
+                region,
+                cloudwatch_client,
+                nodegroup_name,
+                account_id
+            )
+            cluster_info['cloudwatch_alarms_enabled'] = alarms_success
+
             # Update cluster_info with verification results
             cluster_info['auth_configured'] = auth_success
             cluster_info['access_verified'] = verification_success
@@ -2264,36 +3008,33 @@ class EKSClusterManager:
                 'user_access_key': user.get('access_key_id', ''),
                 'user_secret_key': user.get('secret_access_key', ''),
                 'instance_type': instance_type,
-                'instance_types': instance_types,  # All instance types used
+                'instance_types': instance_types,
                 'default_nodes': 1,
                 'version': '1.28',
                 'ami_type': 'AL2023_x86_64_STANDARD',
                 'container_insights_enabled': cluster_info.get('container_insights_enabled', False),
                 'autoscaler_enabled': cluster_info.get('autoscaler_enabled', False),
                 'scheduled_scaling_enabled': cluster_info.get('scheduled_scaling_enabled', False),
+                'cloudwatch_agent_enabled': cluster_info.get('cloudwatch_agent_enabled', False),
+                'cloudwatch_alarms_enabled': cluster_info.get('cloudwatch_alarms_enabled', False),
                 'addons_installed': addons_success
             }
             
             self.kubectl_commands.append(kubectl_info)
             self.log_operation('INFO', f"Generated kubectl commands for {username}")
             
-            # *** PRESERVED: Generate individual user instruction file immediately ***
+            # Generate individual user instruction file immediately
             self.generate_individual_user_instruction(cluster_info, kubectl_info)
             
-            # Print comprehensive success summary
-            self.print_colored(Colors.GREEN, f"🎉 Cluster Creation Summary for {cluster_name}:")
-            self.print_colored(Colors.GREEN, f"   ✅ EKS Version: 1.28")
-            self.print_colored(Colors.GREEN, f"   ✅ AMI Type: AL2023_x86_64_STANDARD")
-            self.print_colored(Colors.GREEN, f"   ✅ Instance Types: {', '.join(instance_types)}")
-            self.print_colored(Colors.GREEN, f"   ✅ CloudWatch Logging: Enabled")
-            self.print_colored(Colors.GREEN, f"   ✅ Essential Add-ons: {'Installed' if addons_success else 'Failed'}")
-            self.print_colored(Colors.GREEN, f"   ✅ Container Insights: {'Enabled' if cluster_info.get('container_insights_enabled') else 'Failed'}")
-            self.print_colored(Colors.GREEN, f"   ✅ Cluster Autoscaler: {'Enabled' if cluster_info.get('autoscaler_enabled') else 'Failed'}")
-            self.print_colored(Colors.GREEN, f"   ✅ Scheduled Scaling: {'Enabled' if cluster_info.get('scheduled_scaling_enabled') else 'Failed'}")
-            self.print_colored(Colors.GREEN, f"   ✅ User Access: {'Configured' if auth_success else 'Failed'}")
+            self.print_enhanced_cluster_summary(cluster_name, cluster_info)
+        
+            # Generate and log detailed alarm report
+            if cluster_info.get('cloudwatch_alarms_enabled'):
+                alarm_report = self.generate_alarm_summary_report(cluster_name)
+                self.log_operation('INFO', f"Detailed alarm report:\n{alarm_report}")
             
-            self.log_operation('INFO', f"Successfully created enhanced cluster {cluster_name} with all features")
-            self.print_colored(Colors.GREEN, f"✅ Successfully created enhanced cluster: {cluster_name} (v1.28, AL2023, diversified instances)")
+            self.log_operation('INFO', f"Successfully created enhanced cluster {cluster_name} with comprehensive monitoring")
+            self.print_colored(Colors.GREEN, f"✅ Successfully created enhanced cluster: {cluster_name} (v1.28, AL2023, monitoring enabled)")
             return True
             
         except Exception as e:

@@ -35,6 +35,7 @@
       "supported_versions": ["1.27", "1.28", "1.29"],
       "default_version": "1.28",
       "min_subnets_required": 2,
-      "min_azs_required": 2
+      "min_azs_required": 2,
+      "ami_type": "AL2023_X86_X64_STANDARD"
     }
 }
