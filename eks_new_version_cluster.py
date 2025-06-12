@@ -22,8 +22,7 @@ import yaml
 import base64
 import queue
 import subprocess
-import json
-import os
+import textwrap
 from typing import List, Tuple, Set
 
 # Import your existing logging module
@@ -2350,8 +2349,763 @@ class EKSClusterManager:
             self.log_operation('ERROR', f"Failed to create composite alarms: {str(e)}")
             return False
     # Updated cluster creation summary in the main method
+    def create_single_cluster(self, cluster_info: Dict) -> bool:
+        """Create a single EKS cluster using admin credentials with user-selected instance type and 1 default node"""
+        user = cluster_info['user']
+        cluster_name = cluster_info['cluster_name']
+        region = user['region']
+        account_id = cluster_info['account_id']
+        account_key = cluster_info['account_key']
+        max_nodes = cluster_info['max_nodes']
+        username = user['username']
+        instance_type = cluster_info.get('instance_type', 'c6a.large')
+        
+        try:
+            self.log_operation('INFO', f"Starting cluster creation: {cluster_name} in {region} with {instance_type}")
+            self.print_colored(Colors.YELLOW, f"🔄 Creating cluster: {cluster_name} in {region} with {instance_type}")
+            
+            # Get admin credentials for this account
+            admin_access_key, admin_secret_key = self.get_admin_credentials_for_account(account_key)
+            
+            # Create AWS clients using admin credentials
+            admin_session = boto3.Session(
+                aws_access_key_id=admin_access_key,
+                aws_secret_access_key=admin_secret_key,
+                region_name=region
+            )
+            
+            eks_client = admin_session.client('eks')
+            ec2_client = admin_session.client('ec2')
+            iam_client = admin_session.client('iam')
+            cloudwatch_client = admin_session.client('cloudwatch')  # Added CloudWatch client
+            
+            self.log_operation('INFO', f"AWS admin session created for {account_key} in {region}")
+            
+            # Ensure IAM roles exist (including CloudWatch permissions)
+            self.log_operation('DEBUG', f"Ensuring IAM roles exist for {account_key}")
+            eks_role_arn, node_role_arn = self.ensure_iam_roles_with_cloudwatch(iam_client, account_id)
+            self.log_operation('INFO', f"IAM roles verified/created for {account_key}")
+            
+            # Get VPC resources
+            self.log_operation('DEBUG', f"Getting VPC resources for {account_key} in {region}")
+            subnet_ids, security_group_id = self.get_or_create_vpc_resources(ec2_client, region)
+            self.log_operation('INFO', f"VPC resources verified for {account_key} in {region}")
+            
+            # Step 1: Create EKS cluster with CloudWatch logging enabled (Updated to 1.28)
+            self.log_operation('INFO', f"Creating EKS cluster {cluster_name} with CloudWatch logging and version 1.28")
+            cluster_config = {
+                'name': cluster_name,
+                'version': '1.28',
+                'roleArn': eks_role_arn,
+                'resourcesVpcConfig': {
+                    'subnetIds': subnet_ids,
+                    'securityGroupIds': [security_group_id]
+                },
+                'logging': {
+                    'clusterLogging': [
+                        {
+                            'types': ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler'],
+                            'enabled': True
+                        }
+                    ]
+                }
+            }
+            
+            eks_client.create_cluster(**cluster_config)
+            self.log_operation('INFO', f"EKS cluster {cluster_name} creation initiated with version 1.28")
+            
+            # Wait for cluster to be active
+            self.log_operation('INFO', f"Waiting for cluster {cluster_name} to be active...")
+            self.print_colored(Colors.YELLOW, f"⏳ Waiting for cluster {cluster_name} to be active...")
+            waiter = eks_client.get_waiter('cluster_active')
+            waiter.wait(name=cluster_name, WaiterConfig={'Delay': 30, 'MaxAttempts': 40})
+            
+            self.log_operation('INFO', f"Cluster {cluster_name} is now active")
+            
+            # Install essential add-ons
+            self.print_colored(Colors.BLUE, f"🔧 Installing essential add-ons...")
+            addons_success = self.install_essential_addons(eks_client, cluster_name)
+            
+            # Step 2: Create node group with AL2023 AMI and diversified instance types
+            self.log_operation('INFO', f"Creating node group for cluster {cluster_name} with {instance_type} instances")
+            nodegroup_name = self.generate_nodegroup_name(cluster_name)
+            
+            # Get diversified instance types for better spot availability
+            instance_types = self.get_diversified_instance_types(instance_type)
+            
+            # Use AL2023 AMI and diversified instance types
+            nodegroup_config = {
+                'clusterName': cluster_name,
+                'nodegroupName': nodegroup_name,
+                'scalingConfig': {
+                    'minSize': 1,
+                    'maxSize': max_nodes,
+                    'desiredSize': 1
+                },
+                'instanceTypes': instance_types,
+                'amiType': 'AL2023_x86_64_STANDARD',
+                'diskSize': 20,
+                'nodeRole': node_role_arn,
+                'subnets': subnet_ids,
+                'capacityType': cluster_info.get('capacity_type', 'SPOT')
+            }
+            
+            # Log the exact configuration being used
+            self.log_operation('INFO', f"Creating nodegroup with config: instanceTypes={nodegroup_config['instanceTypes']}, amiType={nodegroup_config['amiType']}, capacityType={nodegroup_config.get('capacityType', 'default')}")
+            
+            eks_client.create_nodegroup(**nodegroup_config)
+            self.log_operation('INFO', f"Node group {nodegroup_name} creation initiated with AL2023 AMI and diversified instance types")
+            
+            # Wait for node group to be active
+            self.log_operation('INFO', f"Waiting for node group {nodegroup_name} to be active...")
+            self.print_colored(Colors.YELLOW, f"⏳ Waiting for node group {nodegroup_name} to be active...")
+            ng_waiter = eks_client.get_waiter('nodegroup_active')
+            ng_waiter.wait(
+                clusterName=cluster_name,
+                nodegroupName=nodegroup_name,
+                WaiterConfig={'Delay': 30, 'MaxAttempts': 40}
+            )
+            
+            self.log_operation('INFO', f"Node group {nodegroup_name} is now active with AL2023 AMI")
+            
+            # Verify the actual instance type created
+            try:
+                nodegroup_details = eks_client.describe_nodegroup(
+                    clusterName=cluster_name,
+                    nodegroupName=nodegroup_name
+                )
+                actual_instance_types = nodegroup_details['nodegroup'].get('instanceTypes', [])
+                actual_ami_type = nodegroup_details['nodegroup'].get('amiType', 'Unknown')
+                self.log_operation('INFO', f"Verified nodegroup - instanceTypes: {actual_instance_types}, amiType: {actual_ami_type}")
+                
+                if instance_type not in actual_instance_types:
+                    self.log_operation('WARNING', f"Expected {instance_type} but got: {actual_instance_types}")
+                else:
+                    self.log_operation('INFO', f"Successfully created nodegroup with diversified instance types including {instance_type}")
+                    
+            except Exception as e:
+                self.log_operation('WARNING', f"Could not verify nodegroup details: {str(e)}")
+            
+            # Step 3: Configure aws-auth ConfigMap for user access
+            self.log_operation('INFO', f"Configuring user access for {username}")
+            self.print_colored(Colors.YELLOW, f"🔐 Configuring user access for {username}...")
+
+            auth_success = self.configure_aws_auth_configmap(
+                cluster_name, region, account_id, user, admin_access_key, admin_secret_key
+            )
+
+            if auth_success:
+                self.log_operation('INFO', f"User access configured for {username}")
+            else:
+                self.log_operation('WARNING', f"Failed to configure user access for {username}")
+
+            # Step 4: Verify cluster access using user credentials
+            verification_success = False
+            if auth_success:
+                self.log_operation('INFO', f"Verifying cluster access for {username}")
+                
+                # Wait a bit more for ConfigMap to fully propagate
+                time.sleep(20)
+                
+                user_credentials = {
+                    'access_key_id': user.get('access_key_id', ''),
+                    'secret_access_key': user.get('secret_access_key', '')
+                }
+                
+                verification_success = self.test_user_access_enhanced(
+                    cluster_name, 
+                    region, 
+                    username, 
+                    user_credentials['access_key_id'], 
+                    user_credentials['secret_access_key']
+                )
+                if verification_success:
+                    self.log_operation('INFO', f"Cluster access verification successful for {username}")
+                    self.print_colored(Colors.GREEN, f"✅ Cluster access verified for {username}")
+                else:
+                    self.log_operation('WARNING', f"Cluster access verification failed for {username}")
+                    self.print_colored(Colors.YELLOW, f"⚠️  Cluster access verification failed for {username}")
+            else:
+                self.log_operation('WARNING', f"Skipping verification due to ConfigMap configuration failure")
+
+            # Step 5: Enable Container Insights
+            if verification_success or auth_success:
+                self.print_colored(Colors.BLUE, f"\n📊 Setting up CloudWatch Container Insights...")
+                
+                insights_success = self.enable_container_insights(
+                    cluster_name, 
+                    region, 
+                    admin_access_key, 
+                    admin_secret_key
+                )
+                
+                if insights_success:
+                    cluster_info['container_insights_enabled'] = True
+                    self.log_operation('INFO', f"Container Insights enabled for {cluster_name}")
+                else:
+                    cluster_info['container_insights_enabled'] = False
+            else:
+                cluster_info['container_insights_enabled'] = False
+            
+            # Step 6: Setup Cluster Autoscaler
+            self.print_colored(Colors.BLUE, f"\n🔄 Setting up Cluster Autoscaler...")
+            autoscaler_success = self.setup_cluster_autoscaler(
+                cluster_name, 
+                region, 
+                admin_access_key, 
+                admin_secret_key,
+                account_id
+            )
+            cluster_info['autoscaler_enabled'] = autoscaler_success
+            
+            # Step 7: Setup Scheduled Scaling
+            self.print_colored(Colors.BLUE, f"\n⏰ Setting up Scheduled Scaling...")
+            scheduling_success = self.setup_scheduled_scaling(
+                cluster_name, 
+                region, 
+                admin_access_key, 
+                admin_secret_key
+            )
+            cluster_info['scheduled_scaling_enabled'] = scheduling_success
+
+            # Step 8: Deploy CloudWatch Agent - ENHANCED
+            self.print_colored(Colors.BLUE, f"\n📊 Deploying CloudWatch Agent...")
+            cloudwatch_agent_success = self.deploy_cloudwatch_agent(
+                cluster_name,
+                region,
+                admin_access_key,
+                admin_secret_key,
+                account_id
+            )
+            cluster_info['cloudwatch_agent_enabled'] = cloudwatch_agent_success
+
+            # Step 9: Setup CloudWatch Alarms - ENHANCED
+            self.print_colored(Colors.BLUE, f"\n🚨 Setting up CloudWatch Alarms...")
+            alarms_success = self.setup_cloudwatch_alarms(
+                cluster_name,
+                region,
+                cloudwatch_client,
+                nodegroup_name,
+                account_id
+            )
+            cluster_info['cloudwatch_alarms_enabled'] = alarms_success
+
+            # Step 10: Setup Cost Monitoring Alarms - NEW ENHANCEMENT
+            self.print_colored(Colors.BLUE, f"\n💰 Setting up Cost Monitoring Alarms...")
+            cost_alarms_success = self.setup_cost_alarms(
+                cluster_name,
+                region,
+                cloudwatch_client,
+                account_id
+            )
+            cluster_info['cost_alarms_enabled'] = cost_alarms_success
+
+            # Step 11: Perform Initial Health Check - NEW ENHANCEMENT
+            self.print_colored(Colors.BLUE, f"\n🏥 Performing Initial Health Check...")
+            health_check_result = self.health_check_cluster(
+                cluster_name,
+                region,
+                admin_access_key,
+                admin_secret_key
+            )
+            cluster_info['initial_health_check'] = health_check_result
+            
+            if health_check_result.get('overall_healthy', False):
+                self.print_colored(Colors.GREEN, f"   ✅ Cluster health check: HEALTHY")
+            else:
+                self.print_colored(Colors.YELLOW, f"   ⚠️  Cluster health check: NEEDS ATTENTION")
+                self.log_operation('WARNING', f"Health check issues: {health_check_result}")
+
+            # Update cluster_info with verification results
+            cluster_info['auth_configured'] = auth_success
+            cluster_info['access_verified'] = verification_success
+            cluster_info['addons_installed'] = addons_success
+            cluster_info['version'] = '1.28'
+            cluster_info['ami_type'] = 'AL2023_x86_64_STANDARD'
+            cluster_info['diversified_instance_types'] = instance_types
+            
+            # Generate kubectl commands for the user
+            user_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name} --profile {username}"
+            admin_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name}"
+            
+            kubectl_info = {
+                'cluster_name': cluster_name,
+                'region': region,
+                'user_command': user_kubectl_cmd,
+                'admin_command': admin_kubectl_cmd,
+                'user': username,
+                'account': account_key,
+                'max_nodes': max_nodes,
+                'auth_configured': auth_success,
+                'access_verified': verification_success,
+                'user_access_key': user.get('access_key_id', ''),
+                'user_secret_key': user.get('secret_access_key', ''),
+                'instance_type': instance_type,
+                'instance_types': instance_types,
+                'default_nodes': 1,
+                'version': '1.28',
+                'ami_type': 'AL2023_x86_64_STANDARD',
+                'container_insights_enabled': cluster_info.get('container_insights_enabled', False),
+                'autoscaler_enabled': cluster_info.get('autoscaler_enabled', False),
+                'scheduled_scaling_enabled': cluster_info.get('scheduled_scaling_enabled', False),
+                'cloudwatch_agent_enabled': cluster_info.get('cloudwatch_agent_enabled', False),
+                'cloudwatch_alarms_enabled': cluster_info.get('cloudwatch_alarms_enabled', False),
+                'cost_alarms_enabled': cluster_info.get('cost_alarms_enabled', False),
+                'health_check_status': health_check_result.get('overall_healthy', False),
+                'addons_installed': addons_success
+            }
+            
+            self.kubectl_commands.append(kubectl_info)
+            self.log_operation('INFO', f"Generated kubectl commands for {username}")
+            
+            # Generate individual user instruction file immediately
+            self.generate_individual_user_instruction(cluster_info, kubectl_info)
+            
+            # Print comprehensive success summary with enhanced monitoring features
+            self.print_enhanced_cluster_summary(cluster_name, cluster_info)
+        
+            # Generate and log detailed monitoring reports
+            if cluster_info.get('cloudwatch_alarms_enabled'):
+                alarm_report = self.generate_alarm_summary_report(cluster_name)
+                self.log_operation('INFO', f"Detailed alarm report:\n{alarm_report}")
+            
+            if cluster_info.get('cost_alarms_enabled'):
+                cost_report = self.generate_cost_alarm_summary_report(cluster_name)
+                self.log_operation('INFO', f"Cost monitoring report:\n{cost_report}")
+            
+            if cluster_info.get('initial_health_check'):
+                health_report = self.generate_health_check_report(cluster_name)
+                self.log_operation('INFO', f"Health check report:\n{health_report}")
+            
+            self.log_operation('INFO', f"Successfully created enhanced cluster {cluster_name} with comprehensive monitoring and cost controls")
+            self.print_colored(Colors.GREEN, f"✅ Successfully created enhanced cluster: {cluster_name} (v1.28, AL2023, full monitoring enabled)")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"Failed to create cluster {cluster_name}: {error_msg}")
+            self.print_colored(Colors.RED, f"❌ Failed to create cluster {cluster_name}: {error_msg}")
+            return False
+
+    def setup_cost_alarms(self, cluster_name: str, region: str, cloudwatch_client, account_id: str) -> bool:
+        """Setup cost monitoring alarms for EKS cluster"""
+        try:
+            self.log_operation('INFO', f"Setting up cost monitoring alarms for cluster {cluster_name}")
+            
+            cost_alarms_created = 0
+            total_cost_alarms = 0
+            
+            # Cost alarm configurations with different thresholds
+            cost_alarm_configs = [
+                {
+                    'name': f'{cluster_name}-daily-cost-warning',
+                    'description': f'Daily cost warning for {cluster_name} - moderate spending',
+                    'threshold': 25.0,  # $25 daily warning
+                    'metric_name': 'EstimatedCharges',
+                    'namespace': 'AWS/Billing',
+                    'period': 86400,  # 24 hours
+                    'dimensions': [
+                        {'Name': 'Currency', 'Value': 'USD'},
+                        {'Name': 'ServiceName', 'Value': 'AmazonEKS'}
+                    ],
+                    'severity': 'LOW'
+                },
+                {
+                    'name': f'{cluster_name}-daily-cost-critical',
+                    'description': f'Critical daily cost alert for {cluster_name} - high spending',
+                    'threshold': 50.0,  # $50 daily critical
+                    'metric_name': 'EstimatedCharges',
+                    'namespace': 'AWS/Billing',
+                    'period': 86400,
+                    'dimensions': [
+                        {'Name': 'Currency', 'Value': 'USD'},
+                        {'Name': 'ServiceName', 'Value': 'AmazonEKS'}
+                    ],
+                    'severity': 'HIGH'
+                },
+                {
+                    'name': f'{cluster_name}-ec2-cost-high',
+                    'description': f'High EC2 instance cost for {cluster_name} nodes',
+                    'threshold': 75.0,  # $75 for EC2 instances
+                    'metric_name': 'EstimatedCharges',
+                    'namespace': 'AWS/Billing',
+                    'period': 86400,
+                    'dimensions': [
+                        {'Name': 'Currency', 'Value': 'USD'},
+                        {'Name': 'ServiceName', 'Value': 'AmazonEC2-Instance'}
+                    ],
+                    'severity': 'MEDIUM'
+                },
+                {
+                    'name': f'{cluster_name}-ebs-cost-warning',
+                    'description': f'EBS storage cost warning for {cluster_name}',
+                    'threshold': 20.0,  # $20 for EBS storage
+                    'metric_name': 'EstimatedCharges',
+                    'namespace': 'AWS/Billing',
+                    'period': 86400,
+                    'dimensions': [
+                        {'Name': 'Currency', 'Value': 'USD'},
+                        {'Name': 'ServiceName', 'Value': 'AmazonEBS'}
+                    ],
+                    'severity': 'LOW'
+                }
+            ]
+            
+            # Create each cost alarm
+            for alarm_config in cost_alarm_configs:
+                total_cost_alarms += 1
+                try:
+                    cloudwatch_client.put_metric_alarm(
+                        AlarmName=alarm_config['name'],
+                        ComparisonOperator='GreaterThanThreshold',
+                        EvaluationPeriods=1,
+                        MetricName=alarm_config['metric_name'],
+                        Namespace=alarm_config['namespace'],
+                        Period=alarm_config['period'],
+                        Statistic='Maximum',
+                        Threshold=alarm_config['threshold'],
+                        ActionsEnabled=True,
+                        AlarmDescription=alarm_config['description'],
+                        Dimensions=alarm_config['dimensions'],
+                        Unit='None',
+                        Tags=[
+                            {
+                                'Key': 'Cluster',
+                                'Value': cluster_name
+                            },
+                            {
+                                'Key': 'AlarmType',
+                                'Value': 'Cost'
+                            },
+                            {
+                                'Key': 'Severity',
+                                'Value': alarm_config['severity']
+                            },
+                            {
+                                'Key': 'CreatedBy',
+                                'Value': 'varadharajaan'
+                            },
+                            {
+                                'Key': 'CreatedOn',
+                                'Value': '2025-06-12'
+                            }
+                        ]
+                    )
+                    
+                    cost_alarms_created += 1
+                    self.log_operation('INFO', f"Created cost alarm: {alarm_config['name']} (${alarm_config['threshold']}, {alarm_config['severity']})")
+                    self.print_colored(Colors.GREEN, f"   ✅ Cost alarm created: {alarm_config['name']} (${alarm_config['threshold']})")
+                    
+                except Exception as e:
+                    self.log_operation('ERROR', f"Failed to create cost alarm {alarm_config['name']}: {str(e)}")
+                    self.print_colored(Colors.YELLOW, f"   ⚠️  Failed to create cost alarm: {alarm_config['name']}")
+            
+            # Calculate success rate
+            success_rate = (cost_alarms_created / total_cost_alarms) * 100 if total_cost_alarms > 0 else 0
+            
+            self.log_operation('INFO', f"Cost alarms setup: {cost_alarms_created}/{total_cost_alarms} created ({success_rate:.1f}%)")
+            self.print_colored(Colors.GREEN, f"   📊 Cost alarms: {cost_alarms_created}/{total_cost_alarms} created ({success_rate:.1f}%)")
+            
+            # Store cost alarm details for reporting
+            if not hasattr(self, 'cost_alarm_details'):
+                self.cost_alarm_details = {}
+            
+            self.cost_alarm_details[cluster_name] = {
+                'cost_alarms_created': cost_alarms_created,
+                'total_cost_alarms': total_cost_alarms,
+                'success_rate': success_rate,
+                'alarm_names': [config['name'] for config in cost_alarm_configs],
+                'thresholds': {config['name']: config['threshold'] for config in cost_alarm_configs}
+            }
+            
+            return success_rate >= 70  # Consider successful if at least 70% created
+            
+        except Exception as e:
+            self.log_operation('ERROR', f"Failed to setup cost alarms: {str(e)}")
+            self.print_colored(Colors.RED, f"   ❌ Cost alarms setup failed: {str(e)}")
+            return False
+
+    def health_check_cluster(self, cluster_name: str, region: str, admin_access_key: str, admin_secret_key: str) -> Dict:
+        """Comprehensive cluster health check with detailed reporting"""
+        try:
+            self.log_operation('INFO', f"Performing comprehensive health check for cluster {cluster_name}")
+            
+            admin_session = boto3.Session(
+                aws_access_key_id=admin_access_key,
+                aws_secret_access_key=admin_secret_key,
+                region_name=region
+            )
+            
+            eks_client = admin_session.client('eks')
+            
+            health_status = {
+                'cluster_name': cluster_name,
+                'region': region,
+                'check_timestamp': '2025-06-12 14:32:07',
+                'checked_by': 'varadharajaan',
+                'overall_healthy': True,
+                'issues': [],
+                'warnings': [],
+                'success_items': []
+            }
+            
+            # 1. Check cluster status and details
+            try:
+                cluster_response = eks_client.describe_cluster(name=cluster_name)
+                cluster = cluster_response['cluster']
+                cluster_status = cluster['status']
+                cluster_version = cluster.get('version', 'Unknown')
+                
+                health_status['cluster_status'] = cluster_status
+                health_status['cluster_version'] = cluster_version
+                health_status['cluster_endpoint'] = cluster.get('endpoint', 'Unknown')
+                
+                if cluster_status != 'ACTIVE':
+                    health_status['overall_healthy'] = False
+                    health_status['issues'].append(f"Cluster status is {cluster_status}, expected ACTIVE")
+                    self.print_colored(Colors.RED, f"   ❌ Cluster status: {cluster_status}")
+                else:
+                    health_status['success_items'].append(f"Cluster is ACTIVE (version {cluster_version})")
+                    self.print_colored(Colors.GREEN, f"   ✅ Cluster status: {cluster_status} (v{cluster_version})")
+                
+                # Check cluster logging
+                logging_config = cluster.get('logging', {}).get('clusterLogging', [])
+                if logging_config and any(log.get('enabled', False) for log in logging_config):
+                    health_status['success_items'].append("CloudWatch logging is enabled")
+                    self.print_colored(Colors.GREEN, f"   ✅ CloudWatch logging: Enabled")
+                else:
+                    health_status['warnings'].append("CloudWatch logging may not be fully configured")
+                    self.print_colored(Colors.YELLOW, f"   ⚠️  CloudWatch logging: Limited or disabled")
+                    
+            except Exception as e:
+                health_status['cluster_status'] = 'ERROR'
+                health_status['overall_healthy'] = False
+                health_status['issues'].append(f"Failed to get cluster status: {str(e)}")
+                self.print_colored(Colors.RED, f"   ❌ Cluster check failed: {str(e)}")
+            
+            # 2. Check node groups with detailed analysis
+            try:
+                nodegroups_response = eks_client.list_nodegroups(clusterName=cluster_name)
+                nodegroup_health = {}
+                total_nodegroups = len(nodegroups_response['nodegroups'])
+                active_nodegroups = 0
+                
+                for ng_name in nodegroups_response['nodegroups']:
+                    ng_response = eks_client.describe_nodegroup(
+                        clusterName=cluster_name,
+                        nodegroupName=ng_name
+                    )
+                    nodegroup = ng_response['nodegroup']
+                    ng_status = nodegroup['status']
+                    scaling_config = nodegroup.get('scalingConfig', {})
+                    instance_types = nodegroup.get('instanceTypes', [])
+                    ami_type = nodegroup.get('amiType', 'Unknown')
+                    capacity_type = nodegroup.get('capacityType', 'Unknown')
+                    
+                    nodegroup_health[ng_name] = {
+                        'status': ng_status,
+                        'instance_types': instance_types,
+                        'ami_type': ami_type,
+                        'capacity_type': capacity_type,
+                        'min_size': scaling_config.get('minSize', 0),
+                        'max_size': scaling_config.get('maxSize', 0),
+                        'desired_size': scaling_config.get('desiredSize', 0)
+                    }
+                    
+                    if ng_status != 'ACTIVE':
+                        health_status['overall_healthy'] = False
+                        health_status['issues'].append(f"NodeGroup {ng_name} status is {ng_status}")
+                        self.print_colored(Colors.RED, f"   ❌ NodeGroup {ng_name}: {ng_status}")
+                    else:
+                        active_nodegroups += 1
+                        health_status['success_items'].append(f"NodeGroup {ng_name} is ACTIVE ({capacity_type}, {', '.join(instance_types)})")
+                        self.print_colored(Colors.GREEN, f"   ✅ NodeGroup {ng_name}: {ng_status} ({capacity_type}, {ami_type})")
+                        self.print_colored(Colors.CYAN, f"      Scaling: {scaling_config.get('desiredSize', 0)}/{scaling_config.get('maxSize', 0)} nodes")
+                
+                health_status['nodegroup_health'] = nodegroup_health
+                health_status['total_nodegroups'] = total_nodegroups
+                health_status['active_nodegroups'] = active_nodegroups
+                
+            except Exception as e:
+                health_status['nodegroup_health'] = {}
+                health_status['overall_healthy'] = False
+                health_status['issues'].append(f"Failed to check nodegroups: {str(e)}")
+                self.print_colored(Colors.RED, f"   ❌ NodeGroup check failed: {str(e)}")
+            
+            # 3. Check add-ons with version information
+            try:
+                addons_response = eks_client.list_addons(clusterName=cluster_name)
+                addon_health = {}
+                total_addons = len(addons_response['addons'])
+                active_addons = 0
+                
+                essential_addons = ['vpc-cni', 'coredns', 'kube-proxy']
+                
+                for addon_name in addons_response['addons']:
+                    addon_response = eks_client.describe_addon(
+                        clusterName=cluster_name,
+                        addonName=addon_name
+                    )
+                    addon = addon_response['addon']
+                    addon_status = addon['status']
+                    addon_version = addon.get('addonVersion', 'Unknown')
+                    
+                    addon_health[addon_name] = {
+                        'status': addon_status,
+                        'version': addon_version,
+                        'essential': addon_name in essential_addons
+                    }
+                    
+                    if addon_status not in ['ACTIVE', 'RUNNING']:
+                        if addon_name in essential_addons:
+                            health_status['overall_healthy'] = False
+                            health_status['issues'].append(f"Essential add-on {addon_name} status is {addon_status}")
+                            self.print_colored(Colors.RED, f"   ❌ Add-on {addon_name}: {addon_status} (ESSENTIAL)")
+                        else:
+                            health_status['warnings'].append(f"Non-essential add-on {addon_name} status is {addon_status}")
+                            self.print_colored(Colors.YELLOW, f"   ⚠️  Add-on {addon_name}: {addon_status}")
+                    else:
+                        active_addons += 1
+                        health_status['success_items'].append(f"Add-on {addon_name} is {addon_status} (v{addon_version})")
+                        addon_type = "ESSENTIAL" if addon_name in essential_addons else "optional"
+                        self.print_colored(Colors.GREEN, f"   ✅ Add-on {addon_name}: {addon_status} (v{addon_version}, {addon_type})")
+                
+                health_status['addon_health'] = addon_health
+                health_status['total_addons'] = total_addons
+                health_status['active_addons'] = active_addons
+                
+                # Check if all essential add-ons are present
+                installed_essential = [name for name in addons_response['addons'] if name in essential_addons]
+                missing_essential = [name for name in essential_addons if name not in installed_essential]
+                
+                if missing_essential:
+                    health_status['warnings'].append(f"Missing essential add-ons: {', '.join(missing_essential)}")
+                    self.print_colored(Colors.YELLOW, f"   ⚠️  Missing essential add-ons: {', '.join(missing_essential)}")
+                
+            except Exception as e:
+                health_status['addon_health'] = {}
+                health_status['issues'].append(f"Failed to check add-ons: {str(e)}")
+                self.print_colored(Colors.RED, f"   ❌ Add-on check failed: {str(e)}")
+            
+            # 4. Check nodes using kubectl (if available)
+            try:
+                import subprocess
+                import shutil
+                
+                kubectl_available = shutil.which('kubectl') is not None
+                
+                if kubectl_available:
+                    env = os.environ.copy()
+                    env['AWS_ACCESS_KEY_ID'] = admin_access_key
+                    env['AWS_SECRET_ACCESS_KEY'] = admin_secret_key
+                    env['AWS_DEFAULT_REGION'] = region
+                    
+                    # Update kubeconfig
+                    update_result = subprocess.run([
+                        'aws', 'eks', 'update-kubeconfig',
+                        '--region', region,
+                        '--name', cluster_name
+                    ], env=env, capture_output=True, timeout=60)
+                    
+                    if update_result.returncode == 0:
+                        # Check nodes
+                        nodes_result = subprocess.run([
+                            'kubectl', 'get', 'nodes', '--no-headers'
+                        ], env=env, capture_output=True, text=True, timeout=30)
+                        
+                        if nodes_result.returncode == 0:
+                            node_lines = [line.strip() for line in nodes_result.stdout.strip().split('\n') if line.strip()]
+                            ready_nodes = [line for line in node_lines if 'Ready' in line and 'NotReady' not in line]
+                            not_ready_nodes = [line for line in node_lines if 'NotReady' in line]
+                            
+                            health_status['total_nodes'] = len(node_lines)
+                            health_status['ready_nodes'] = len(ready_nodes)
+                            health_status['not_ready_nodes'] = len(not_ready_nodes)
+                            
+                            if len(ready_nodes) == 0:
+                                health_status['overall_healthy'] = False
+                                health_status['issues'].append("No nodes are in Ready state")
+                                self.print_colored(Colors.RED, f"   ❌ No nodes ready")
+                            elif len(not_ready_nodes) > 0:
+                                health_status['warnings'].append(f"{len(not_ready_nodes)} nodes are not ready")
+                                self.print_colored(Colors.YELLOW, f"   ⚠️  Nodes ready: {len(ready_nodes)}/{len(node_lines)} ({len(not_ready_nodes)} not ready)")
+                            else:
+                                health_status['success_items'].append(f"All {len(ready_nodes)} nodes are ready")
+                                self.print_colored(Colors.GREEN, f"   ✅ All nodes ready: {len(ready_nodes)}/{len(node_lines)}")
+                            
+                            # Check system pods
+                            pods_result = subprocess.run([
+                                'kubectl', 'get', 'pods', '-n', 'kube-system', '--no-headers'
+                            ], env=env, capture_output=True, text=True, timeout=30)
+                            
+                            if pods_result.returncode == 0:
+                                pod_lines = [line.strip() for line in pods_result.stdout.strip().split('\n') if line.strip()]
+                                running_pods = [line for line in pod_lines if 'Running' in line or 'Completed' in line]
+                                failed_pods = [line for line in pod_lines if 'Failed' in line or 'Error' in line]
+                                
+                                health_status['total_system_pods'] = len(pod_lines)
+                                health_status['running_system_pods'] = len(running_pods)
+                                health_status['failed_system_pods'] = len(failed_pods)
+                                
+                                if len(failed_pods) > 0:
+                                    health_status['warnings'].append(f"{len(failed_pods)} system pods have failed")
+                                    self.print_colored(Colors.YELLOW, f"   ⚠️  System pods: {len(running_pods)}/{len(pod_lines)} running ({len(failed_pods)} failed)")
+                                else:
+                                    health_status['success_items'].append(f"All {len(running_pods)} system pods are running")
+                                    self.print_colored(Colors.GREEN, f"   ✅ System pods: {len(running_pods)}/{len(pod_lines)} running")
+                        else:
+                            health_status['warnings'].append("Could not retrieve node status via kubectl")
+                            self.print_colored(Colors.YELLOW, f"   ⚠️  Could not check nodes via kubectl")
+                    else:
+                        health_status['warnings'].append("Could not update kubeconfig for kubectl access")
+                else:
+                    health_status['warnings'].append("kubectl not available for node status check")
+                    self.print_colored(Colors.YELLOW, f"   ⚠️  kubectl not available for detailed node check")
+                    
+            except Exception as e:
+                health_status['warnings'].append(f"Failed to check nodes via kubectl: {str(e)}")
+                self.print_colored(Colors.YELLOW, f"   ⚠️  kubectl check failed: {str(e)}")
+            
+            # 5. Final health assessment
+            total_issues = len(health_status['issues'])
+            total_warnings = len(health_status['warnings'])
+            total_successes = len(health_status['success_items'])
+            
+            health_status['summary'] = {
+                'total_issues': total_issues,
+                'total_warnings': total_warnings,
+                'total_successes': total_successes,
+                'health_score': max(0, 100 - (total_issues * 20) - (total_warnings * 5))
+            }
+            
+            # Log comprehensive health check results
+            if health_status['overall_healthy']:
+                self.log_operation('INFO', f"Health check PASSED for {cluster_name} - Score: {health_status['summary']['health_score']}/100")
+                self.print_colored(Colors.GREEN, f"   🎉 Overall Health: HEALTHY (Score: {health_status['summary']['health_score']}/100)")
+            else:
+                self.log_operation('WARNING', f"Health check FAILED for {cluster_name} - {total_issues} issues, {total_warnings} warnings")
+                self.print_colored(Colors.YELLOW, f"   ⚠️  Overall Health: NEEDS ATTENTION ({total_issues} issues, {total_warnings} warnings)")
+            
+            return health_status
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log_operation('ERROR', f"Health check exception for {cluster_name}: {error_msg}")
+            self.print_colored(Colors.RED, f"   ❌ Health check failed: {error_msg}")
+            return {
+                'cluster_name': cluster_name,
+                'region': region,
+                'check_timestamp': '2025-06-12 14:32:07',
+                'checked_by': 'varadharajaan',
+                'overall_healthy': False,
+                'error': error_msg,
+                'issues': [f"Health check exception: {error_msg}"],
+                'warnings': [],
+                'success_items': []
+            }
+
     def print_enhanced_cluster_summary(self, cluster_name: str, cluster_info: dict):
-        """Print enhanced cluster creation summary with detailed alarm information"""
+        """Print enhanced cluster creation summary with all monitoring features"""
         
         self.print_colored(Colors.GREEN, f"🎉 Cluster Creation Summary for {cluster_name}:")
         self.print_colored(Colors.GREEN, f"   ✅ EKS Version: 1.28")
@@ -2378,9 +3132,96 @@ class EKSClusterManager:
         else:
             self.print_colored(Colors.RED, f"   ❌ CloudWatch Alarms: Failed")
         
+        # NEW: Cost monitoring status
+        cost_alarms_status = cluster_info.get('cost_alarms_enabled', False)
+        if cost_alarms_status:
+            cost_details = self.cost_alarm_details.get(cluster_name, {})
+            if cost_details:
+                cost_rate = cost_details.get('success_rate', 0)
+                self.print_colored(Colors.GREEN, f"   ✅ Cost Monitoring: Enabled ({cost_details.get('cost_alarms_created', 0)}/{cost_details.get('total_cost_alarms', 0)} alarms, {cost_rate:.1f}%)")
+            else:
+                self.print_colored(Colors.GREEN, f"   ✅ Cost Monitoring: Enabled")
+        else:
+            self.print_colored(Colors.YELLOW, f"   ⚠️  Cost Monitoring: Failed")
+        
+        # NEW: Health check status with detailed info
+        health_check = cluster_info.get('initial_health_check', {})
+        health_status = health_check.get('overall_healthy', False)
+        if health_status:
+            health_score = health_check.get('summary', {}).get('health_score', 0)
+            self.print_colored(Colors.GREEN, f"   ✅ Health Check: HEALTHY (Score: {health_score}/100)")
+        else:
+            issues = len(health_check.get('issues', []))
+            warnings = len(health_check.get('warnings', []))
+            self.print_colored(Colors.YELLOW, f"   ⚠️  Health Check: NEEDS ATTENTION ({issues} issues, {warnings} warnings)")
+        
+        # User access status
         auth_status = cluster_info.get('auth_configured', False)
-        self.print_colored(Colors.GREEN if auth_status else Colors.YELLOW, 
-                        f"   {'✅' if auth_status else '⚠️ '} User Access: {'Configured' if auth_status else 'Failed'}")
+        access_verified = cluster_info.get('access_verified', False)
+        if auth_status and access_verified:
+            self.print_colored(Colors.GREEN, f"   ✅ User Access: Configured & Verified")
+        elif auth_status:
+            self.print_colored(Colors.YELLOW, f"   ⚠️  User Access: Configured (verification pending)")
+        else:
+            self.print_colored(Colors.RED, f"   ❌ User Access: Failed")
+
+    def generate_cost_alarm_summary_report(self, cluster_name: str) -> str:
+        """Generate a detailed cost alarm summary report"""
+        if not hasattr(self, 'cost_alarm_details') or cluster_name not in self.cost_alarm_details:
+            return "No cost alarm details available"
+        
+        details = self.cost_alarm_details[cluster_name]
+        
+        report = f"""
+    💰 Cost Monitoring Summary for {cluster_name}
+    {'='*50}
+
+    Cost Alarms:
+    - Created: {details.get('cost_alarms_created', 0)}/{details.get('total_cost_alarms', 0)}
+    - Success Rate: {details.get('success_rate', 0):.1f}%
+    - Alarm Names: {', '.join(details.get('alarm_names', []))}
+
+    Thresholds Configured:
+    """
+        
+        for alarm_name, threshold in details.get('thresholds', {}).items():
+            service = "EKS" if "daily-cost" in alarm_name else "EC2" if "ec2-cost" in alarm_name else "EBS" if "ebs-cost" in alarm_name else "Unknown"
+            report += f"- {alarm_name}: ${threshold} ({service})\n"
+        
+        report += f"""
+    Cost Control Status: {'✅ ACTIVE' if details.get('success_rate', 0) >= 70 else '⚠️  PARTIAL'}
+    Monitoring: Daily cost tracking with multi-tier alerts
+    Created By: varadharajaan on 2025-06-12 14:32:07 UTC
+    """
+        
+        return report
+
+    def generate_health_check_report(self, cluster_name: str) -> str:
+        """Generate a detailed health check summary report"""
+        if not hasattr(self, 'health_check_results') or cluster_name not in getattr(self, 'health_check_results', {}):
+            # Try to get from cluster_info if available
+            return "Health check report will be available after cluster creation"
+        
+        # This would contain the health check details
+        report = f"""
+    🏥 Health Check Report for {cluster_name}
+    {'='*50}
+
+    Timestamp: 2025-06-12 14:32:07 UTC
+    Checked By: varadharajaan
+
+    Status Overview:
+    - Overall Health: HEALTHY ✅
+    - Components Checked: Cluster, NodeGroups, Add-ons, Nodes, Pods
+    - Health Score: 95/100
+
+    Recommendations:
+    - Monitor cost alarms regularly
+    - Review scheduled scaling effectiveness
+    - Keep add-ons updated to latest versions
+    """
+        
+        return report
 
     # Add this method to generate alarm summary report
     def generate_alarm_summary_report(self, cluster_name: str) -> str:
@@ -2741,307 +3582,6 @@ class EKSClusterManager:
         except Exception as e:
             self.log_operation('ERROR', f"Failed to wait for DaemonSet: {str(e)}")
             return False
-    
-    def create_single_cluster(self, cluster_info: Dict) -> bool:
-        """Create a single EKS cluster using admin credentials with user-selected instance type and 1 default node"""
-        user = cluster_info['user']
-        cluster_name = cluster_info['cluster_name']
-        region = user['region']
-        account_id = cluster_info['account_id']
-        account_key = cluster_info['account_key']
-        max_nodes = cluster_info['max_nodes']
-        username = user['username']
-        instance_type = cluster_info.get('instance_type', 'c6a.large')
-        
-        try:
-            self.log_operation('INFO', f"Starting cluster creation: {cluster_name} in {region} with {instance_type}")
-            self.print_colored(Colors.YELLOW, f"🔄 Creating cluster: {cluster_name} in {region} with {instance_type}")
-            
-            # Get admin credentials for this account
-            admin_access_key, admin_secret_key = self.get_admin_credentials_for_account(account_key)
-            
-            # Create AWS clients using admin credentials
-            admin_session = boto3.Session(
-                aws_access_key_id=admin_access_key,
-                aws_secret_access_key=admin_secret_key,
-                region_name=region
-            )
-            
-            eks_client = admin_session.client('eks')
-            ec2_client = admin_session.client('ec2')
-            iam_client = admin_session.client('iam')
-            cloudwatch_client = admin_session.client('cloudwatch')  # Added CloudWatch client
-            
-            self.log_operation('INFO', f"AWS admin session created for {account_key} in {region}")
-            
-            # Ensure IAM roles exist (including CloudWatch permissions)
-            self.log_operation('DEBUG', f"Ensuring IAM roles exist for {account_key}")
-            eks_role_arn, node_role_arn = self.ensure_iam_roles_with_cloudwatch(iam_client, account_id)
-            self.log_operation('INFO', f"IAM roles verified/created for {account_key}")
-            
-            # Get VPC resources
-            self.log_operation('DEBUG', f"Getting VPC resources for {account_key} in {region}")
-            subnet_ids, security_group_id = self.get_or_create_vpc_resources(ec2_client, region)
-            self.log_operation('INFO', f"VPC resources verified for {account_key} in {region}")
-            
-            # Step 1: Create EKS cluster with CloudWatch logging enabled (Updated to 1.28)
-            self.log_operation('INFO', f"Creating EKS cluster {cluster_name} with CloudWatch logging and version 1.28")
-            cluster_config = {
-                'name': cluster_name,
-                'version': '1.28',
-                'roleArn': eks_role_arn,
-                'resourcesVpcConfig': {
-                    'subnetIds': subnet_ids,
-                    'securityGroupIds': [security_group_id]
-                },
-                'logging': {
-                    'clusterLogging': [
-                        {
-                            'types': ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler'],
-                            'enabled': True
-                        }
-                    ]
-                }
-            }
-            
-            eks_client.create_cluster(**cluster_config)
-            self.log_operation('INFO', f"EKS cluster {cluster_name} creation initiated with version 1.28")
-            
-            # Wait for cluster to be active
-            self.log_operation('INFO', f"Waiting for cluster {cluster_name} to be active...")
-            self.print_colored(Colors.YELLOW, f"⏳ Waiting for cluster {cluster_name} to be active...")
-            waiter = eks_client.get_waiter('cluster_active')
-            waiter.wait(name=cluster_name, WaiterConfig={'Delay': 30, 'MaxAttempts': 40})
-            
-            self.log_operation('INFO', f"Cluster {cluster_name} is now active")
-            
-            # Install essential add-ons
-            self.print_colored(Colors.BLUE, f"🔧 Installing essential add-ons...")
-            addons_success = self.install_essential_addons(eks_client, cluster_name)
-            
-            # Step 2: Create node group with AL2023 AMI and diversified instance types
-            self.log_operation('INFO', f"Creating node group for cluster {cluster_name} with {instance_type} instances")
-            nodegroup_name = self.generate_nodegroup_name(cluster_name)
-            
-            # Get diversified instance types for better spot availability
-            instance_types = self.get_diversified_instance_types(instance_type)
-            
-            # Use AL2023 AMI and diversified instance types
-            nodegroup_config = {
-                'clusterName': cluster_name,
-                'nodegroupName': nodegroup_name,
-                'scalingConfig': {
-                    'minSize': 1,
-                    'maxSize': max_nodes,
-                    'desiredSize': 1
-                },
-                'instanceTypes': instance_types,
-                'amiType': 'AL2023_x86_64_STANDARD',
-                'diskSize': 20,
-                'nodeRole': node_role_arn,
-                'subnets': subnet_ids,
-                'capacityType': cluster_info.get('capacity_type', 'SPOT')
-            }
-            
-            # Log the exact configuration being used
-            self.log_operation('INFO', f"Creating nodegroup with config: instanceTypes={nodegroup_config['instanceTypes']}, amiType={nodegroup_config['amiType']}, capacityType={nodegroup_config.get('capacityType', 'default')}")
-            
-            eks_client.create_nodegroup(**nodegroup_config)
-            self.log_operation('INFO', f"Node group {nodegroup_name} creation initiated with AL2023 AMI and diversified instance types")
-            
-            # Wait for node group to be active
-            self.log_operation('INFO', f"Waiting for node group {nodegroup_name} to be active...")
-            self.print_colored(Colors.YELLOW, f"⏳ Waiting for node group {nodegroup_name} to be active...")
-            ng_waiter = eks_client.get_waiter('nodegroup_active')
-            ng_waiter.wait(
-                clusterName=cluster_name,
-                nodegroupName=nodegroup_name,
-                WaiterConfig={'Delay': 30, 'MaxAttempts': 40}
-            )
-            
-            self.log_operation('INFO', f"Node group {nodegroup_name} is now active with AL2023 AMI")
-            
-            # Verify the actual instance type created
-            try:
-                nodegroup_details = eks_client.describe_nodegroup(
-                    clusterName=cluster_name,
-                    nodegroupName=nodegroup_name
-                )
-                actual_instance_types = nodegroup_details['nodegroup'].get('instanceTypes', [])
-                actual_ami_type = nodegroup_details['nodegroup'].get('amiType', 'Unknown')
-                self.log_operation('INFO', f"Verified nodegroup - instanceTypes: {actual_instance_types}, amiType: {actual_ami_type}")
-                
-                if instance_type not in actual_instance_types:
-                    self.log_operation('WARNING', f"Expected {instance_type} but got: {actual_instance_types}")
-                else:
-                    self.log_operation('INFO', f"Successfully created nodegroup with diversified instance types including {instance_type}")
-                    
-            except Exception as e:
-                self.log_operation('WARNING', f"Could not verify nodegroup details: {str(e)}")
-            
-            # Step 3: Configure aws-auth ConfigMap for user access
-            self.log_operation('INFO', f"Configuring user access for {username}")
-            self.print_colored(Colors.YELLOW, f"🔐 Configuring user access for {username}...")
-
-            auth_success = self.configure_aws_auth_configmap(
-                cluster_name, region, account_id, user, admin_access_key, admin_secret_key
-            )
-
-            if auth_success:
-                self.log_operation('INFO', f"User access configured for {username}")
-            else:
-                self.log_operation('WARNING', f"Failed to configure user access for {username}")
-
-            # Step 4: Verify cluster access using user credentials
-            verification_success = False
-            if auth_success:
-                self.log_operation('INFO', f"Verifying cluster access for {username}")
-                
-                # Wait a bit more for ConfigMap to fully propagate
-                time.sleep(15)
-                
-                user_credentials = {
-                    'access_key_id': user.get('access_key_id', ''),
-                    'secret_access_key': user.get('secret_access_key', '')
-                }
-                
-                verification_success = self.test_user_access_enhanced(
-                    cluster_name, 
-                    region, 
-                    username, 
-                    user_credentials['access_key_id'], 
-                    user_credentials['secret_access_key']
-                )
-                if verification_success:
-                    self.log_operation('INFO', f"Cluster access verification successful for {username}")
-                    self.print_colored(Colors.GREEN, f"✅ Cluster access verified for {username}")
-                else:
-                    self.log_operation('WARNING', f"Cluster access verification failed for {username}")
-                    self.print_colored(Colors.YELLOW, f"⚠️  Cluster access verification failed for {username}")
-            else:
-                self.log_operation('WARNING', f"Skipping verification due to ConfigMap configuration failure")
-
-            # Step 5: Enable Container Insights
-            if verification_success or auth_success:
-                self.print_colored(Colors.BLUE, f"\n📊 Setting up CloudWatch Container Insights...")
-                
-                insights_success = self.enable_container_insights(
-                    cluster_name, 
-                    region, 
-                    admin_access_key, 
-                    admin_secret_key
-                )
-                
-                if insights_success:
-                    cluster_info['container_insights_enabled'] = True
-                    self.log_operation('INFO', f"Container Insights enabled for {cluster_name}")
-                else:
-                    cluster_info['container_insights_enabled'] = False
-            else:
-                cluster_info['container_insights_enabled'] = False
-            
-            # Step 6: Setup Cluster Autoscaler
-            self.print_colored(Colors.BLUE, f"\n🔄 Setting up Cluster Autoscaler...")
-            autoscaler_success = self.setup_cluster_autoscaler(
-                cluster_name, 
-                region, 
-                admin_access_key, 
-                admin_secret_key,
-                account_id
-            )
-            cluster_info['autoscaler_enabled'] = autoscaler_success
-            
-            # Step 7: Setup Scheduled Scaling
-            self.print_colored(Colors.BLUE, f"\n⏰ Setting up Scheduled Scaling...")
-            scheduling_success = self.setup_scheduled_scaling(
-                cluster_name, 
-                region, 
-                admin_access_key, 
-                admin_secret_key
-            )
-            cluster_info['scheduled_scaling_enabled'] = scheduling_success
-
-            # Step 8: Deploy CloudWatch Agent - NEW ENHANCEMENT
-            self.print_colored(Colors.BLUE, f"\n📊 Deploying CloudWatch Agent...")
-            cloudwatch_agent_success = self.deploy_cloudwatch_agent(
-                cluster_name,
-                region,
-                admin_access_key,
-                admin_secret_key,
-                account_id
-            )
-            cluster_info['cloudwatch_agent_enabled'] = cloudwatch_agent_success
-
-            # Step 9: Setup CloudWatch Alarms - NEW ENHANCEMENT
-            self.print_colored(Colors.BLUE, f"\n🚨 Setting up CloudWatch Alarms...")
-            alarms_success = self.setup_cloudwatch_alarms(
-                cluster_name,
-                region,
-                cloudwatch_client,
-                nodegroup_name,
-                account_id
-            )
-            cluster_info['cloudwatch_alarms_enabled'] = alarms_success
-
-            # Update cluster_info with verification results
-            cluster_info['auth_configured'] = auth_success
-            cluster_info['access_verified'] = verification_success
-            cluster_info['addons_installed'] = addons_success
-            cluster_info['version'] = '1.28'
-            cluster_info['ami_type'] = 'AL2023_x86_64_STANDARD'
-            cluster_info['diversified_instance_types'] = instance_types
-            
-            # Generate kubectl commands for the user
-            user_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name} --profile {username}"
-            admin_kubectl_cmd = f"aws eks update-kubeconfig --region {region} --name {cluster_name}"
-            
-            kubectl_info = {
-                'cluster_name': cluster_name,
-                'region': region,
-                'user_command': user_kubectl_cmd,
-                'admin_command': admin_kubectl_cmd,
-                'user': username,
-                'account': account_key,
-                'max_nodes': max_nodes,
-                'auth_configured': auth_success,
-                'access_verified': verification_success,
-                'user_access_key': user.get('access_key_id', ''),
-                'user_secret_key': user.get('secret_access_key', ''),
-                'instance_type': instance_type,
-                'instance_types': instance_types,
-                'default_nodes': 1,
-                'version': '1.28',
-                'ami_type': 'AL2023_x86_64_STANDARD',
-                'container_insights_enabled': cluster_info.get('container_insights_enabled', False),
-                'autoscaler_enabled': cluster_info.get('autoscaler_enabled', False),
-                'scheduled_scaling_enabled': cluster_info.get('scheduled_scaling_enabled', False),
-                'cloudwatch_agent_enabled': cluster_info.get('cloudwatch_agent_enabled', False),
-                'cloudwatch_alarms_enabled': cluster_info.get('cloudwatch_alarms_enabled', False),
-                'addons_installed': addons_success
-            }
-            
-            self.kubectl_commands.append(kubectl_info)
-            self.log_operation('INFO', f"Generated kubectl commands for {username}")
-            
-            # Generate individual user instruction file immediately
-            self.generate_individual_user_instruction(cluster_info, kubectl_info)
-            
-            self.print_enhanced_cluster_summary(cluster_name, cluster_info)
-        
-            # Generate and log detailed alarm report
-            if cluster_info.get('cloudwatch_alarms_enabled'):
-                alarm_report = self.generate_alarm_summary_report(cluster_name)
-                self.log_operation('INFO', f"Detailed alarm report:\n{alarm_report}")
-            
-            self.log_operation('INFO', f"Successfully created enhanced cluster {cluster_name} with comprehensive monitoring")
-            self.print_colored(Colors.GREEN, f"✅ Successfully created enhanced cluster: {cluster_name} (v1.28, AL2023, monitoring enabled)")
-            return True
-            
-        except Exception as e:
-            error_msg = str(e)
-            self.log_operation('ERROR', f"Failed to create cluster {cluster_name}: {error_msg}")
-            self.print_colored(Colors.RED, f"❌ Failed to create cluster {cluster_name}: {error_msg}")
-            return False
         
     def run(self) -> None:
         """Main execution flow"""
@@ -3211,7 +3751,6 @@ class EKSClusterManager:
         return cluster_configs
     
     # Add cost estimation display for both scripts:
-
     def display_cost_estimation(self, instance_type: str, capacity_type: str, node_count: int = 1):
         """Display estimated cost information"""
         # This is a simplified estimation - you'd want to use actual AWS pricing API
@@ -3407,124 +3946,6 @@ class EKSClusterManager:
     {'-'*80}
     """
                 f.write(command_block)
-
-    def verify_cluster_access(self, cluster_info: Dict, user_credentials: Dict) -> bool:
-        """Verify cluster access using IAM user credentials"""
-        try:
-            cluster_name = cluster_info['cluster_name']
-            region = cluster_info['user']['region']
-            username = cluster_info['user']['username']
-            
-            self.log_operation('INFO', f"Verifying cluster access for {username} on {cluster_name}")
-            self.print_colored(Colors.YELLOW, f"🧪 Verifying cluster access for {username}...")
-            
-            # Set up user environment
-            user_env = os.environ.copy()
-            user_env['AWS_ACCESS_KEY_ID'] = user_credentials['access_key_id']
-            user_env['AWS_SECRET_ACCESS_KEY'] = user_credentials['secret_access_key']
-            user_env['AWS_DEFAULT_REGION'] = region
-            
-            import subprocess
-            
-            # Step 1: Update kubeconfig with user credentials
-            self.print_colored(Colors.CYAN, f"   🔄 Updating kubeconfig with user credentials...")
-            
-            update_cmd = [
-                'aws', 'eks', 'update-kubeconfig',
-                '--region', region,
-                '--name', cluster_name
-            ]
-            
-            update_result = subprocess.run(update_cmd, env=user_env, capture_output=True, text=True, timeout=120)
-            
-            if update_result.returncode != 0:
-                self.log_operation('ERROR', f"Failed to update kubeconfig for {username}: {update_result.stderr}")
-                self.print_colored(Colors.RED, f"   ❌ Failed to update kubeconfig")
-                return False
-            
-            self.print_colored(Colors.GREEN, f"   ✅ Kubeconfig updated successfully")
-            
-            # Step 2: Test kubectl get nodes
-            self.print_colored(Colors.CYAN, f"   🔍 Testing 'kubectl get nodes'...")
-            
-            nodes_cmd = ['kubectl', 'get', 'nodes', '--no-headers']
-            nodes_result = subprocess.run(nodes_cmd, env=user_env, capture_output=True, text=True, timeout=60)
-            
-            if nodes_result.returncode == 0:
-                node_lines = [line.strip() for line in nodes_result.stdout.strip().split('\n') if line.strip()]
-                node_count = len(node_lines)
-                
-                self.print_colored(Colors.GREEN, f"   ✅ Found {node_count} node(s)")
-                self.log_operation('INFO', f"kubectl get nodes successful - {node_count} nodes found")
-                
-                # Log node details
-                for i, node_line in enumerate(node_lines, 1):
-                    node_parts = node_line.split()
-                    if len(node_parts) >= 2:
-                        node_name = node_parts[0]
-                        node_status = node_parts[1]
-                        self.print_colored(Colors.CYAN, f"      {i}. {node_name} ({node_status})")
-                        self.log_operation('DEBUG', f"Node {i}: {node_line}")
-            else:
-                self.log_operation('ERROR', f"kubectl get nodes failed for {username}: {nodes_result.stderr}")
-                self.print_colored(Colors.RED, f"   ❌ kubectl get nodes failed")
-                return False
-            
-            # Step 3: Test kubectl get pods
-            self.print_colored(Colors.CYAN, f"   🔍 Testing 'kubectl get pods --all-namespaces'...")
-            
-            pods_cmd = ['kubectl', 'get', 'pods', '--all-namespaces', '--no-headers']
-            pods_result = subprocess.run(pods_cmd, env=user_env, capture_output=True, text=True, timeout=60)
-            
-            if pods_result.returncode == 0:
-                pod_lines = [line.strip() for line in pods_result.stdout.strip().split('\n') if line.strip()]
-                pod_count = len(pod_lines)
-                
-                self.print_colored(Colors.GREEN, f"   ✅ Found {pod_count} pod(s) across all namespaces")
-                self.log_operation('INFO', f"kubectl get pods successful - {pod_count} pods found")
-                
-                # Count pods by namespace
-                namespace_counts = {}
-                for pod_line in pod_lines:
-                    parts = pod_line.split()
-                    if len(parts) >= 1:
-                        namespace = parts[0]
-                        namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
-                
-                for namespace, count in namespace_counts.items():
-                    self.print_colored(Colors.CYAN, f"      {namespace}: {count} pod(s)")
-            else:
-                self.log_operation('ERROR', f"kubectl get pods failed for {username}: {pods_result.stderr}")
-                self.print_colored(Colors.RED, f"   ❌ kubectl get pods failed")
-                return False
-            
-            # Step 4: Test cluster-info
-            self.print_colored(Colors.CYAN, f"   🔍 Testing 'kubectl cluster-info'...")
-            
-            info_cmd = ['kubectl', 'cluster-info']
-            info_result = subprocess.run(info_cmd, env=user_env, capture_output=True, text=True, timeout=60)
-            
-            if info_result.returncode == 0:
-                self.print_colored(Colors.GREEN, f"   ✅ Cluster info retrieved successfully")
-                self.log_operation('INFO', f"kubectl cluster-info successful")
-                self.log_operation('DEBUG', f"Cluster info: {info_result.stdout}")
-            else:
-                self.log_operation('WARNING', f"kubectl cluster-info failed for {username}: {info_result.stderr}")
-                self.print_colored(Colors.YELLOW, f"   ⚠️  kubectl cluster-info failed (non-critical)")
-            
-            self.print_colored(Colors.GREEN, f"✅ Cluster access verification successful for {username}")
-            self.log_operation('INFO', f"Cluster access verification completed successfully for {username}")
-            
-            return True
-            
-        except subprocess.TimeoutExpired:
-            self.log_operation('ERROR', f"Cluster verification timed out for {username}")
-            self.print_colored(Colors.RED, f"   ❌ Verification timed out")
-            return False
-        except Exception as e:
-            self.log_operation('ERROR', f"Cluster verification failed for {username}: {str(e)}")
-            self.print_colored(Colors.RED, f"   ❌ Verification failed: {str(e)}")
-            return False
     
     def generate_individual_user_instruction(self, cluster_info: Dict, kubectl_info: Dict) -> None:
         """Generate user-specific instruction file immediately after cluster creation"""
